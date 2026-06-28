@@ -21,7 +21,7 @@ from datetime import datetime
 # CONFIG — change these IDs to match your server
 # ============================================================
 
-BOOSTER_ROLE_ID = 1520740405547761755          
+BOOSTER_ROLE_ID = 1520740405547761755
 ADMIN_ROLE_IDS  = [1517236355275428040, 1517235116114579727]
 
 GIVEAWAY_CHANNEL_NAME   = "🎁︱𝒩𝓊𝓂𝒷𝑒𝓇-𝒢𝒾𝓋𝑒𝒶𝓌𝒶𝓎"
@@ -75,20 +75,33 @@ def has_admin_role(member: discord.Member) -> bool:
     return any(role.id in ADMIN_ROLE_IDS for role in member.roles)
 
 
+def get_boost_count(user_id: int) -> int:
+    with get_db() as conn:
+        row = conn.execute("SELECT count FROM boosts WHERE user_id = ?", (user_id,)).fetchone()
+        return row["count"] if row else 0
+
+
+def add_boost(user_id: int):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO boosts (user_id, count) VALUES (?, 1)
+            ON CONFLICT(user_id) DO UPDATE SET count = count + 1
+        """, (user_id,))
+        conn.commit()
+
+
+def set_boost_count(user_id: int, count: int):
+    with get_db() as conn:
+        conn.execute("""
+            INSERT INTO boosts (user_id, count) VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET count = ?
+        """, (user_id, count, count))
+        conn.commit()
+
+
 def is_booster(member: discord.Member) -> bool:
-    """Returns True if the member has the booster role."""
-    return any(role.id == BOOSTER_ROLE_ID for role in member.roles)
-
-
-def booster_boost_count(guild: discord.Guild, member: discord.Member) -> int:
-    """
-    Returns how many times this member has boosted.
-    Discord exposes this via member.premium_since — if they're actively boosting
-    we count them as 1. For real multi-boost counting you'd need a premium tier
-    tracking system; here we use the role as a proxy (1 boost = role present).
-    Expand this function if you add a custom multi-boost tracker.
-    """
-    return 1 if is_booster(member) else 0
+    """Returns True if the member has reached the boost threshold."""
+    return get_boost_count(member.id) >= BOOSTER_PACKS_THRESHOLD
 
 
 async def safe_send_ephemeral(interaction: discord.Interaction, message: str):
@@ -126,11 +139,16 @@ def init_db():
                 added_at   REAL    NOT NULL
             )
         """)
-        # Migration: add 'type' column if it doesn't exist yet (for existing DBs)
         try:
             conn.execute("ALTER TABLE leaks ADD COLUMN type TEXT NOT NULL DEFAULT 'normal'")
         except sqlite3.OperationalError:
-            pass  # Column already exists
+            pass
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS boosts (
+                user_id  INTEGER PRIMARY KEY,
+                count    INTEGER NOT NULL DEFAULT 0
+            )
+        """)
         conn.commit()
 
 
@@ -802,7 +820,7 @@ def build_search_embed(results, query: str, page: int) -> discord.Embed:
 
 class LeaksListView(discord.ui.View):
     def __init__(self, rows, page: int = 0, leak_type: Optional[str] = None):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.rows        = rows
         self.page        = page
         self.leak_type   = leak_type
@@ -828,7 +846,7 @@ class LeaksListView(discord.ui.View):
 
 class LeaksSearchView(discord.ui.View):
     def __init__(self, results, query: str, page: int = 0):
-        super().__init__(timeout=None)
+        super().__init__(timeout=120)
         self.results     = results
         self.query       = query
         self.page        = page
@@ -1078,6 +1096,32 @@ async def on_ready():
         print(f"Synced {len(synced)} commands")
     except Exception as e:
         print(f"Failed to sync: {e}")
+
+
+@bot.event
+async def on_member_update(before: discord.Member, after: discord.Member):
+    booster_role = after.guild.get_role(BOOSTER_ROLE_ID)
+    if booster_role is None:
+        return
+    had_role = booster_role in before.roles
+    has_role = booster_role in after.roles
+    if not had_role and has_role:
+        add_boost(after.id)
+        count     = get_boost_count(after.id)
+        remaining = BOOSTER_PACKS_THRESHOLD - count
+        try:
+            if count >= BOOSTER_PACKS_THRESHOLD:
+                await after.send(
+                    f"\U0001f31f Thanks for boosting! You now have **{count} boosts** and have unlocked **booster packs**!\n"
+                    f"Use `/leaks type:booster` to access them."
+                )
+            else:
+                await after.send(
+                    f"\U0001f31f Thanks for boosting! You now have **{count} boosts**.\n"
+                    f"You need **{remaining} more boost{'s' if remaining != 1 else ''}** to unlock booster packs!"
+                )
+        except discord.Forbidden:
+            pass
 
 
 @bot.event
@@ -1530,9 +1574,11 @@ async def leaks_search(interaction: discord.Interaction, leak: str, type: Option
             return await interaction.followup.send("❌ Type must be `normal` or `booster`.", ephemeral=True)
 
         if type == "booster" and not is_booster(member) and not has_admin_role(member):
+            count     = get_boost_count(member.id)
+            remaining = BOOSTER_PACKS_THRESHOLD - count
             return await interaction.followup.send(
-                "🌟 Booster packs are exclusive to **Server Boosters**!\n"
-                "Boost the server to unlock access to booster packs.",
+                f"🌟 Booster packs require **{BOOSTER_PACKS_THRESHOLD} boosts** to unlock!\n"
+                f"You currently have **{count} boost{'s' if count != 1 else ''}** — need **{remaining} more**.",
                 ephemeral=True
             )
 
@@ -1547,11 +1593,17 @@ async def leaks_search(interaction: discord.Interaction, leak: str, type: Option
         return await interaction.followup.send(f"❌ No leaks found matching **{leak}**.", ephemeral=True)
 
     if len(results) == 1:
-        row = results[0]
+        row             = results[0]
         is_booster_pack = row["type"] == "booster"
 
         if is_booster_pack and not is_booster(member) and not has_admin_role(member):
-            return await interaction.followup.send("🌟 This is a booster-exclusive pack. Boost the server to access it!", ephemeral=True)
+            count     = get_boost_count(member.id)
+            remaining = BOOSTER_PACKS_THRESHOLD - count
+            return await interaction.followup.send(
+                f"🌟 This is a booster-exclusive pack! You need **{BOOSTER_PACKS_THRESHOLD} boosts** to access it.\n"
+                f"You currently have **{count} boost{'s' if count != 1 else ''}** — need **{remaining} more**.",
+                ephemeral=True
+            )
 
         type_badge = "🌟 Booster Pack" if is_booster_pack else "📦 Normal Pack"
         embed = discord.Embed(title=f"📦 {row['name']}", color=discord.Color.blurple())
@@ -1563,6 +1615,8 @@ async def leaks_search(interaction: discord.Interaction, leak: str, type: Option
 
     view = LeaksSearchView(results, leak)
     await interaction.followup.send(embed=build_search_embed(results, leak, 0), view=view, ephemeral=True)
+
+
 
 
 @tree.command(name="leakslist", description="List all available leaks")
@@ -1741,6 +1795,76 @@ async def rating_setup(interaction: discord.Interaction):
 
 
 # ============================================================
+
+# ============================================================
+# BOOST COMMANDS
+# ============================================================
+
+@tree.command(name="printboosts", description="Check how many boosts you or another user has")
+@auto_defer(ephemeral=True)
+@app_commands.describe(user="User to check (leave blank for yourself)")
+async def print_boosts(interaction: discord.Interaction, user: Optional[discord.Member] = None):
+    target    = user or interaction.user
+    count     = get_boost_count(target.id)
+    needed    = BOOSTER_PACKS_THRESHOLD
+    remaining = max(0, needed - count)
+
+    embed = discord.Embed(title="🌟 Boost Count", color=discord.Color.gold())
+    embed.add_field(name="User",   value=target.mention, inline=True)
+    embed.add_field(name="Boosts", value=str(count),     inline=True)
+
+    if count >= needed:
+        embed.add_field(name="Status", value="✅ Has access to booster packs!", inline=False)
+    else:
+        embed.add_field(name="Status", value=f"❌ Needs **{remaining}** more boost{'s' if remaining != 1 else ''} to unlock booster packs.", inline=False)
+
+    embed.set_footer(text=f"{needed} boosts required for booster pack access")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="changeboosts", description="Manually set a user's boost count (admin only)")
+@auto_defer(ephemeral=True)
+@app_commands.describe(user="User to update", count="New boost count to set")
+async def change_boosts(interaction: discord.Interaction, user: discord.Member, count: int):
+    if not has_admin_role(interaction.user):
+        return await interaction.followup.send("❌ Admins only.", ephemeral=True)
+
+    if count < 0:
+        return await interaction.followup.send("❌ Boost count can't be negative.", ephemeral=True)
+
+    old_count    = get_boost_count(user.id)
+    set_boost_count(user.id, count)
+    unlocked     = count >= BOOSTER_PACKS_THRESHOLD
+    was_unlocked = old_count >= BOOSTER_PACKS_THRESHOLD
+
+    embed = discord.Embed(title="✅ Boost Count Updated", color=discord.Color.yellow())
+    embed.add_field(name="User",      value=user.mention,  inline=True)
+    embed.add_field(name="Old Count", value=str(old_count), inline=True)
+    embed.add_field(name="New Count", value=str(count),     inline=True)
+    embed.add_field(
+        name="Status",
+        value="✅ Has booster pack access" if unlocked else f"❌ Needs {BOOSTER_PACKS_THRESHOLD - count} more boosts",
+        inline=False
+    )
+    embed.set_footer(text=f"Updated by {interaction.user.display_name}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+    try:
+        if unlocked and not was_unlocked:
+            await user.send(
+                f"🌟 Your boost count was updated to **{count}** by an admin — you now have access to **booster packs**!\n"
+                f"Use `/leaks type:booster` to access them."
+            )
+        elif not unlocked:
+            remaining = BOOSTER_PACKS_THRESHOLD - count
+            await user.send(
+                f"🌟 Your boost count was updated to **{count}** by an admin.\n"
+                f"You need **{remaining} more boost{'s' if remaining != 1 else ''}** to unlock booster packs."
+            )
+    except discord.Forbidden:
+        pass
+
+
 # BACKGROUND TASKS
 # ============================================================
 
