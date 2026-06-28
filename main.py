@@ -1893,11 +1893,11 @@ class RoleColorSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         member = interaction.guild.get_member(interaction.user.id)
 
-        # Check if user is a booster
-        if not is_booster(member) and not has_admin_role(member):
+        # Check if user has at least 1 boost
+        if get_boost_count(member.id) < 1 and not has_admin_role(member):
             return await interaction.response.send_message(
-                f"🌟 This perk is for **Server Boosters** only!\n"
-                f"You need **{BOOSTER_PACKS_THRESHOLD} boosts** to unlock this. Use `/printboosts` to check your count.",
+                "🌟 This perk is for **Server Boosters** only!\n"
+                "Boost the server once to unlock custom role colors!",
                 ephemeral=True
             )
 
@@ -1932,12 +1932,10 @@ class RoleColorView(discord.ui.View):
 async def role_color(interaction: discord.Interaction):
     member = interaction.guild.get_member(interaction.user.id)
 
-    if not is_booster(member) and not has_admin_role(member):
-        count     = get_boost_count(member.id)
-        remaining = BOOSTER_PACKS_THRESHOLD - count
+    if get_boost_count(member.id) < 1 and not has_admin_role(member):
         return await interaction.followup.send(
-            f"🌟 This perk is for **Server Boosters** only!\n"
-            f"You currently have **{count} boost{'s' if count != 1 else ''}** — need **{remaining} more** to unlock this.",
+            "🌟 This perk is for **Server Boosters** only!\n"
+            "Boost the server once to unlock custom role colors!",
             ephemeral=True
         )
 
