@@ -1513,7 +1513,7 @@ async def add_type(interaction: discord.Interaction, leak: str, type: str):
 
 
 @tree.command(name="leaks", description="Search for a game asset leak by name")
-@auto_defer(ephemeral=False)
+@auto_defer(ephemeral=True)
 @app_commands.describe(
     leak="Name or partial name to search for",
     type="Filter by type: 'normal' or 'booster' (optional)",
@@ -1524,13 +1524,11 @@ async def leaks_search(interaction: discord.Interaction, leak: str, type: Option
 
     member = interaction.guild.get_member(interaction.user.id) or interaction.user
 
-    # Determine what type filter to use
     if type:
         type = type.lower().strip()
         if type not in ("normal", "booster"):
             return await interaction.followup.send("❌ Type must be `normal` or `booster`.", ephemeral=True)
 
-        # Booster packs require the booster role
         if type == "booster" and not is_booster(member) and not has_admin_role(member):
             return await interaction.followup.send(
                 "🌟 Booster packs are exclusive to **Server Boosters**!\n"
@@ -1540,35 +1538,31 @@ async def leaks_search(interaction: discord.Interaction, leak: str, type: Option
 
         results = search_leaks(leak, leak_type=type)
     else:
-        # No type filter — if user is not a booster, only show normal leaks
         if is_booster(member) or has_admin_role(member):
             results = search_leaks(leak)
         else:
             results = search_leaks(leak, leak_type="normal")
 
     if not results:
-        return await interaction.followup.send(f"❌ No leaks found matching **{leak}**.")
+        return await interaction.followup.send(f"❌ No leaks found matching **{leak}**.", ephemeral=True)
 
-    # Single result — full embed with payhip
     if len(results) == 1:
-        row        = results[0]
+        row = results[0]
         is_booster_pack = row["type"] == "booster"
 
-        # Double-check access for booster pack
         if is_booster_pack and not is_booster(member) and not has_admin_role(member):
             return await interaction.followup.send("🌟 This is a booster-exclusive pack. Boost the server to access it!", ephemeral=True)
 
         type_badge = "🌟 Booster Pack" if is_booster_pack else "📦 Normal Pack"
         embed = discord.Embed(title=f"📦 {row['name']}", color=discord.Color.blurple())
-        embed.add_field(name="📋 Type",        value=type_badge,                            inline=True)
-        embed.add_field(name="⬇️ Download",    value=f"[Click here]({row['link']})",        inline=True)
-        embed.add_field(name="🛒 Buy on Payhip", value=f"[Click here]({row['payhip_url']})", inline=True)
+        embed.add_field(name="📋 Type",          value=type_badge,                             inline=True)
+        embed.add_field(name="⬇️ Download",      value=f"[Click here]({row['link']})",         inline=True)
+        embed.add_field(name="🛒 Buy on Payhip", value=f"[Click here]({row['payhip_url']})",   inline=True)
         embed.set_footer(text=f"Added <t:{int(row['added_at'])}:R> by user ID {row['added_by']}")
-        return await interaction.followup.send(embed=embed)
+        return await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # Multiple results — paginated
     view = LeaksSearchView(results, leak)
-    await interaction.followup.send(embed=build_search_embed(results, leak, 0), view=view)
+    await interaction.followup.send(embed=build_search_embed(results, leak, 0), view=view, ephemeral=True)
 
 
 @tree.command(name="leakslist", description="List all available leaks")
