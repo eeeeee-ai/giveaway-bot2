@@ -1865,6 +1865,97 @@ async def change_boosts(interaction: discord.Interaction, user: discord.Member, 
         pass
 
 
+# ============================================================
+# ROLE COLOR SYSTEM
+# ============================================================
+
+COLOR_ROLES = {
+    "🟢 Green":  1520832320825852145,
+    "🔵 Blue":   1520832423003422840,
+    "💜 Purple": 1520832546739322950,
+    "🔴 Red":    1520832630994632846,
+    "🟡 Yellow": 1520832736183582721,
+    "🩷 Pink":   1520832691556061396,
+    "🟠 Orange": 1520832765249978588,
+    "🩶 Grey":   1520832789904097542,
+}
+
+
+class RoleColorSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=name, value=str(role_id))
+            for name, role_id in COLOR_ROLES.items()
+        ]
+        options.append(discord.SelectOption(label="❌ Remove Color", value="remove", description="Remove your current color role"))
+        super().__init__(placeholder="Pick a color...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        member = interaction.guild.get_member(interaction.user.id)
+
+        # Check if user is a booster
+        if not is_booster(member) and not has_admin_role(member):
+            return await interaction.response.send_message(
+                f"🌟 This perk is for **Server Boosters** only!\n"
+                f"You need **{BOOSTER_PACKS_THRESHOLD} boosts** to unlock this. Use `/printboosts` to check your count.",
+                ephemeral=True
+            )
+
+        # Remove all existing color roles first
+        color_role_ids = set(COLOR_ROLES.values())
+        roles_to_remove = [r for r in member.roles if r.id in color_role_ids]
+        if roles_to_remove:
+            await member.remove_roles(*roles_to_remove, reason="Role color change")
+
+        if self.values[0] == "remove":
+            return await interaction.response.send_message("✅ Your color role has been removed!", ephemeral=True)
+
+        # Add the new color role
+        new_role = interaction.guild.get_role(int(self.values[0]))
+        if not new_role:
+            return await interaction.response.send_message("❌ That role doesn't exist anymore.", ephemeral=True)
+
+        await member.add_roles(new_role, reason="Role color change")
+
+        color_name = next((name for name, rid in COLOR_ROLES.items() if rid == int(self.values[0])), "Unknown")
+        await interaction.response.send_message(f"✅ Your color has been set to **{color_name}**!", ephemeral=True)
+
+
+class RoleColorView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=60)
+        self.add_item(RoleColorSelect())
+
+
+@tree.command(name="rolecolor", description="Change your name color (Server Boosters only)")
+@auto_defer(ephemeral=True)
+async def role_color(interaction: discord.Interaction):
+    member = interaction.guild.get_member(interaction.user.id)
+
+    if not is_booster(member) and not has_admin_role(member):
+        count     = get_boost_count(member.id)
+        remaining = BOOSTER_PACKS_THRESHOLD - count
+        return await interaction.followup.send(
+            f"🌟 This perk is for **Server Boosters** only!\n"
+            f"You currently have **{count} boost{'s' if count != 1 else ''}** — need **{remaining} more** to unlock this.",
+            ephemeral=True
+        )
+
+    # Show current color role if any
+    color_role_ids = set(COLOR_ROLES.values())
+    current = next((r for r in member.roles if r.id in color_role_ids), None)
+    current_text = f"Your current color: **{current.name}**" if current else "You have no color role set."
+
+    embed = discord.Embed(
+        title="🎨 Role Color Picker",
+        description=f"{current_text}\n\nPick a color from the dropdown below!",
+        color=current.color if current else discord.Color.blurple()
+    )
+    embed.set_footer(text="Booster perk • Color applies to your name in the member list")
+    await interaction.followup.send(embed=embed, view=RoleColorView(), ephemeral=True)
+
+
+
 # BACKGROUND TASKS
 # ============================================================
 
