@@ -1500,6 +1500,8 @@ async def growinstant(interaction: discord.Interaction, user: discord.Member, pl
 # LEAKS COMMANDS
 # ============================================================
 
+LEAKS_PING_ROLE_ID = 1516437537915146240
+
 @tree.command(name="leakscreate", description="Add a new leak entry (admin only)")
 @auto_defer(ephemeral=False)
 @app_commands.describe(
@@ -1507,8 +1509,9 @@ async def growinstant(interaction: discord.Interaction, user: discord.Member, pl
     link="Download/access link",
     payhip="Payhip product link",
     type="Type: 'normal' or 'booster' (default: normal)",
+    ping="Ping the leaks ping role when this is created (default: False)",
 )
-async def leaks_create(interaction: discord.Interaction, leak: str, link: str, payhip: str, type: str = "normal"):
+async def leaks_create(interaction: discord.Interaction, leak: str, link: str, payhip: str, type: str = "normal", ping: bool = False):
     if not has_admin_role(interaction.user):
         return await interaction.followup.send("❌ Admins only.", ephemeral=True)
 
@@ -1521,13 +1524,18 @@ async def leaks_create(interaction: discord.Interaction, leak: str, link: str, p
         return await interaction.followup.send(f"❌ A leak named **{leak}** already exists. Use `/leaksdelete` first if you want to replace it.", ephemeral=True)
 
     type_badge = "🌟 Booster" if type == "booster" else "📦 Normal"
-    embed = discord.Embed(title="✅ Leak Added", color=discord.Color.green())
-    embed.add_field(name="Name",          value=leak,         inline=False)
-    embed.add_field(name="Type",          value=type_badge,   inline=False)
-    embed.add_field(name="Download Link", value=link,         inline=False)
-    embed.add_field(name="Payhip Link",   value=payhip,       inline=False)
-    embed.set_footer(text=f"Added by {interaction.user.display_name}")
-    await interaction.followup.send(embed=embed)
+    embed = discord.Embed(title="✅ New Leak Added", color=discord.Color.green())
+    embed.add_field(name="Name", value=leak,       inline=False)
+    embed.add_field(name="Type", value=type_badge, inline=False)
+    embed.set_footer(text=f"Added by {interaction.user.display_name} • Use /leaks to get the download link")
+
+    content = None
+    if ping:
+        ping_role = interaction.guild.get_role(LEAKS_PING_ROLE_ID)
+        if ping_role:
+            content = ping_role.mention
+
+    await interaction.followup.send(content=content, embed=embed)
 
 
 @tree.command(name="addtype", description="Set the type of an existing leak (admin only)")
