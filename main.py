@@ -366,63 +366,23 @@ async def run_command(video_full_path, output_file_name, target_size):
     os.remove(video_full_path)
 
 async def download_tiktok(url: str):
-    # 1. Resolve redirects (vm.tiktok.com → full TikTok URL)
+    api_url = f"https://www.tikwm.com/api/?url={url}"
+
     async with aiohttp.ClientSession() as session:
-        async with session.get(url, allow_redirects=True) as resp:
-            final_url = str(resp.url)
-
-    # 2. Extract video ID
-    match = re.search(r'/video/(\d+)', final_url)
-    if not match:
-        raise Exception("Could not extract video ID")
-    video_id = match.group(1)
-
-    api_url = f"https://www.tiktok.com/api/item/detail/?itemId={video_id}"
-
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-        "Referer": "https://www.tiktok.com/",
-        "Cookie": "tt-region=GB"
-    }
-
-    # 3. Fetch metadata
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url, headers=headers) as resp:
+        async with session.get(api_url) as resp:
             data = await resp.json()
 
-    # 4. Try playAddr
-    try:
-        video_url = data["itemInfo"]["itemStruct"]["video"]["playAddr"]
-    except:
-        video_url = None
+    # Choose no-watermark or watermark
+    video_url = data["data"]["play"]  # no watermark
+    # video_url = data["data"]["wmplay"]  # watermark version
 
-    # 5. Fallback: downloadAddr
-    if not video_url:
-        try:
-            video_url = data["itemInfo"]["itemStruct"]["video"]["downloadAddr"]
-        except:
-            video_url = None
-
-    # 6. Fallback: bitrateInfo
-    if not video_url:
-        try:
-            video_url = data["itemInfo"]["itemStruct"]["video"]["bitrateInfo"][0]["PlayAddr"]["UrlList"][0]
-        except:
-            raise Exception("Could not find any video URL in metadata")
-
-    # 7. Download video file
-    filename = f"tiktok_{video_id}.mp4"
+    filename = f"tiktok_{data['data']['id']}.mp4"
     async with aiohttp.ClientSession() as session:
-        async with session.get(video_url, headers=headers) as resp:
+        async with session.get(video_url) as resp:
             with open(filename, "wb") as f:
                 f.write(await resp.read())
 
     return filename
-
 
 def update_growing_seeds(user_id):
     now     = time.time()
