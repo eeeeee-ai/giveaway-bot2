@@ -52,28 +52,64 @@ intents.message_content = True
 bot  = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-@tree.command(name="ttembed", description="Download a TikTok video from a link")
-@app_commands.describe(url="The TikTok link")
-async def tiktok_embed(interaction: discord.Interaction, url: str):
-    await interaction.response.defer()  # prevents timeout
+async def download_tiktok(url: str):
+    # 1. Resolve redirects (vm.tiktok.com → full TikTok URL)
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, allow_redirects=True) as resp:
+            final_url = str(resp.url)
 
+    # 2. Extract video ID
+    match = re.search(r'/video/(\d+)', final_url)
+    if not match:
+        raise Exception("Could not extract video ID")
+    video_id = match.group(1)
+
+    api_url = f"https://www.tiktok.com/api/item/detail/?itemId={video_id}"
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.tiktok.com/",
+        "Cookie": "tt-region=GB"
+    }
+
+    # 3. Fetch metadata
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url, headers=headers) as resp:
+            data = await resp.json()
+
+    # 4. Try playAddr
     try:
-        # Resolve redirects (vm.tiktok.com → real link)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                final_url = str(resp.url)
+        video_url = data["itemInfo"]["itemStruct"]["video"]["playAddr"]
+    except:
+        video_url = None
 
-        # Download video
-        file_path = await download_tiktok(final_url)
+    # 5. Fallback: downloadAddr
+    if not video_url:
+        try:
+            video_url = data["itemInfo"]["itemStruct"]["video"]["downloadAddr"]
+        except:
+            video_url = None
 
-        # Send file
-        await interaction.followup.send(file=discord.File(file_path))
+    # 6. Fallback: bitrateInfo
+    if not video_url:
+        try:
+            video_url = data["itemInfo"]["itemStruct"]["video"]["bitrateInfo"][0]["PlayAddr"]["UrlList"][0]
+        except:
+            raise Exception("Could not find any video URL in metadata")
 
-        # Cleanup
-        os.remove(file_path)
+    # 7. Download video file
+    filename = f"tiktok_{video_id}.mp4"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(video_url, headers=headers) as resp:
+            with open(filename, "wb") as f:
+                f.write(await resp.read())
 
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to download TikTok: `{e}`")
+    return filename
+
 
 
 # ============================================================
