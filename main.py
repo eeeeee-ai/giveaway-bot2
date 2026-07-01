@@ -52,29 +52,6 @@ intents.message_content = True
 bot  = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
 
-@tree.command(name="ttembed", description="Download a TikTok video from a link")
-@app_commands.describe(url="The TikTok link")
-async def tiktok_embed(interaction: discord.Interaction, url: str):
-    await interaction.response.defer()  # prevents timeout
-
-    try:
-        # Resolve redirects (vm.tiktok.com → real link)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, allow_redirects=True) as resp:
-                final_url = str(resp.url)
-
-        # Download video using your updated downloader
-        file_path = await download_tiktok(final_url)
-
-        # Send file
-        await interaction.followup.send(file=discord.File(file_path))
-
-        # Cleanup
-        os.remove(file_path)
-
-    except Exception as e:
-        await interaction.followup.send(f"❌ Failed to download TikTok: `{e}`")
-
 
 
 # ============================================================
