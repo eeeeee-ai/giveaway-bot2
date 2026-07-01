@@ -338,6 +338,40 @@ class GrowingSeed:
                 return mut
         return None
 
+import asyncio
+import os
+
+async def compress_video(input_file, output_file, target_size_mb=8):
+    # Get duration
+    proc = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", input_file,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    stdout, _ = await proc.communicate()
+    duration = float(stdout.decode().strip())
+
+    # Calculate bitrate for target size
+    target_bitrate = int((target_size_mb * 8192) / duration)  # kbps
+
+    # Two‑pass compression
+    cmd1 = [
+        "ffmpeg", "-y", "-i", input_file,
+        "-c:v", "libx264", "-preset", "fast", "-b:v", f"{target_bitrate}k",
+        "-pass", "1", "-an", "-f", "mp4", os.devnull
+    ]
+    cmd2 = [
+        "ffmpeg", "-y", "-i", input_file,
+        "-c:v", "libx264", "-preset", "fast", "-b:v", f"{target_bitrate}k",
+        "-pass", "2", "-c:a", "aac", "-b:a", "64k", output_file
+    ]
+
+    for cmd in (cmd1, cmd2):
+        proc = await asyncio.create_subprocess_exec(*cmd)
+        await proc.communicate()
+
+    return output_file
+
 
 def calculate_grow_time(base_seed, user_id):
     grow_time = 300
@@ -365,6 +399,7 @@ async def run_command(video_full_path, output_file_name, target_size):
     os.remove(video_full_path + "passlog-0.log")
     os.remove(video_full_path)
 
+
 async def download_tiktok(url: str):
     api_url = f"https://www.tikwm.com/api/?url={url}"
 
@@ -372,17 +407,23 @@ async def download_tiktok(url: str):
         async with session.get(api_url) as resp:
             data = await resp.json()
 
-    # Choose no-watermark or watermark
     video_url = data["data"]["play"]  # no watermark
-    # video_url = data["data"]["wmplay"]  # watermark version
-
     filename = f"tiktok_{data['data']['id']}.mp4"
+
     async with aiohttp.ClientSession() as session:
         async with session.get(video_url) as resp:
             with open(filename, "wb") as f:
                 f.write(await resp.read())
 
+    # Check size and compress if needed
+    if os.path.getsize(filename) > 8 * 1024 * 1024:
+        compressed = f"compressed_{filename}"
+        await compress_video(filename, compressed)
+        os.remove(filename)
+        filename = compressed
+
     return filename
+
 
 def update_growing_seeds(user_id):
     now     = time.time()
