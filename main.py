@@ -218,6 +218,7 @@ def update_leak_type(name: str, new_type: str) -> bool:
 # IN-MEMORY STATE
 # ============================================================
 
+TIKTOK_REGEX = re.compile(r"\.tiktok\.")
 giveaway_logs    = []
 active_giveaways = {}
 user_message_counts = defaultdict(int)
@@ -327,6 +328,44 @@ def calculate_grow_time(base_seed, user_id):
     if boost and time.time() < boost["expires"]:
         grow_time *= boost["multiplier"]
     return max(30, grow_time)
+
+async def run_command(video_full_path, output_file_name, target_size):
+    pro1 = await asyncio.create_subprocess_exec(*["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",video_full_path], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, _ = await pro1.communicate()
+    bitrate = str(math.floor(8*8100/float(stdout))-32)+"k"
+    cmd1 = f"ffmpeg -y -i {video_full_path} -c:v libx264 -passlogfile {video_full_path}passlog -preset ultrafast -b:v {bitrate} -pass 1 -an -f mp4 {output_file_name}"
+    cmd2 = f"ffmpeg -y -i {video_full_path} -c:v libx264 -passlogfile {video_full_path}passlog -preset ultrafast -b:v {bitrate} -pass 2 -c:a aac -b:a 32k {output_file_name}"
+    for c in (cmd1, cmd2):
+        p = await asyncio.create_subprocess_exec(*c.split(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await p.communicate()
+    os.remove(video_full_path + "passlog-0.log")
+    os.remove(video_full_path)
+
+async def download_tiktok(url):
+    browser = await pyppeteer.launch({'headless': True, "args": ['--no-sandbox', '--disable-setuid-sandbox']})
+    page = await browser.newPage()
+    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.72 Safari/537.36')
+    await page.goto(url, {"waitUntil": 'load', "timeout": 1000000})
+    element = await page.querySelector('video')
+    video_url = await page.evaluate('(element) => element.src', element)
+    cookies = await page.cookies()
+    await browser.close()
+
+    jar = {c['name']: c['value'] for c in cookies}
+    headers = {"Connection": "keep-alive", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.72 Safari/537.36", "Referer": "https://www.tiktok.com/"}
+
+    filename = f"tt_{int(time.time()*1000)}.mp4"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(video_url, headers=headers, cookies=jar) as resp:
+            with open(filename, 'wb') as fd:
+                async for chunk in resp.content.iter_chunked(4096):
+                    fd.write(chunk)
+
+    if os.path.getsize(filename) >= 8388000:
+        compressed = filename + "comp.mp4"
+        await run_command(filename, compressed, 8388000)
+        filename = compressed
+    return filename
 
 
 def update_growing_seeds(user_id):
@@ -1128,6 +1167,15 @@ async def on_member_update(before: discord.Member, after: discord.Member):
 async def on_message(message):
     if message.author.bot:
         return
+
+    if TIKTOK_REGEX.search(message.content):
+        try:
+            file_path = await download_tiktok(message.content.strip())
+            await message.reply(file=discord.File(file_path))
+            os.remove(file_path)
+        except Exception as e:
+            print(f"TikTok embed failed: {e}")
+        return  # skip other handlers for this message
 
     # ── JSON import handler ──────────────────────────────────────────────────
     if message.author.id in pending_imports and message.attachments:
