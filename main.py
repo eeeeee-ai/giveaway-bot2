@@ -16,6 +16,7 @@ from discord import ButtonStyle
 from io import BytesIO
 from datetime import datetime
 import aiohttp
+import pyppeteer
 
 
 # ============================================================
