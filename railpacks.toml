@@ -1,0 +1,8 @@
+[setup]
+packages = ["python311", "pip", "ffmpeg"]
+
+[install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python main.py"
