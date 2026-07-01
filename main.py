@@ -218,7 +218,7 @@ def update_leak_type(name: str, new_type: str) -> bool:
 # IN-MEMORY STATE
 # ============================================================
 
-TIKTOK_REGEX = re.compile(r"\.tiktok\.")
+TIKTOK_REGEX = re.compile(r"(tiktok\.com|vm\.tiktok\.com)")
 giveaway_logs    = []
 active_giveaways = {}
 user_message_counts = defaultdict(int)
