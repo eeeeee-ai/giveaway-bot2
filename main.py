@@ -15,6 +15,7 @@ from discord.ui import Select, Button, View
 from discord import ButtonStyle
 from io import BytesIO
 from datetime import datetime
+import aiohttp
 
 
 # ============================================================
