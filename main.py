@@ -341,37 +341,15 @@ class GrowingSeed:
 import asyncio
 import os
 
-async def compress_video(input_file, output_file, target_size_mb=8):
-    # Get duration
-    proc = await asyncio.create_subprocess_exec(
-        "ffprobe", "-v", "error", "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1", input_file,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-    stdout, _ = await proc.communicate()
-    duration = float(stdout.decode().strip())
-
-    # Calculate bitrate for target size
-    target_bitrate = int((target_size_mb * 8192) / duration)  # kbps
-
-    # Two‑pass compression
-    cmd1 = [
+async def compress_video(input_file, output_file, target_bitrate="800k"):
+    cmd = [
         "ffmpeg", "-y", "-i", input_file,
-        "-c:v", "libx264", "-preset", "fast", "-b:v", f"{target_bitrate}k",
-        "-pass", "1", "-an", "-f", "mp4", os.devnull
+        "-c:v", "libx264", "-preset", "fast", "-b:v", target_bitrate,
+        "-c:a", "aac", "-b:a", "64k", output_file
     ]
-    cmd2 = [
-        "ffmpeg", "-y", "-i", input_file,
-        "-c:v", "libx264", "-preset", "fast", "-b:v", f"{target_bitrate}k",
-        "-pass", "2", "-c:a", "aac", "-b:a", "64k", output_file
-    ]
-
-    for cmd in (cmd1, cmd2):
-        proc = await asyncio.create_subprocess_exec(*cmd)
-        await proc.communicate()
-
-    return output_file
-
+    proc = await asyncio.create_subprocess_exec(*cmd)
+    await proc.communicate()
+    return 
 
 def calculate_grow_time(base_seed, user_id):
     grow_time = 300
@@ -387,18 +365,33 @@ def calculate_grow_time(base_seed, user_id):
         grow_time *= boost["multiplier"]
     return max(30, grow_time)
 
-async def run_command(video_full_path, output_file_name, target_size):
-    pro1 = await asyncio.create_subprocess_exec(*["ffprobe","-v","error","-show_entries","format=duration","-of","default=noprint_wrappers=1:nokey=1",video_full_path], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    stdout, _ = await pro1.communicate()
-    bitrate = str(math.floor(8*8100/float(stdout))-32)+"k"
-    cmd1 = f"ffmpeg -y -i {video_full_path} -c:v libx264 -passlogfile {video_full_path}passlog -preset ultrafast -b:v {bitrate} -pass 1 -an -f mp4 {output_file_name}"
-    cmd2 = f"ffmpeg -y -i {video_full_path} -c:v libx264 -passlogfile {video_full_path}passlog -preset ultrafast -b:v {bitrate} -pass 2 -c:a aac -b:a 32k {output_file_name}"
-    for c in (cmd1, cmd2):
-        p = await asyncio.create_subprocess_exec(*c.split(), stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+async def run_command(video_full_path, output_file_name, target_bitrate="800k"):
+    # Two-pass compression without ffprobe
+    cmd1 = [
+        "ffmpeg", "-y", "-i", video_full_path,
+        "-c:v", "libx264", "-passlogfile", video_full_path + "passlog",
+        "-preset", "ultrafast", "-b:v", target_bitrate,
+        "-pass", "1", "-an", "-f", "mp4", os.devnull
+    ]
+    cmd2 = [
+        "ffmpeg", "-y", "-i", video_full_path,
+        "-c:v", "libx264", "-passlogfile", video_full_path + "passlog",
+        "-preset", "ultrafast", "-b:v", target_bitrate,
+        "-pass", "2", "-c:a", "aac", "-b:a", "32k", output_file_name
+    ]
+
+    for cmd in (cmd1, cmd2):
+        p = await asyncio.create_subprocess_exec(*cmd)
         await p.communicate()
-    os.remove(video_full_path + "passlog-0.log")
+
+    # Clean up logs and original file
+    try:
+        os.remove(video_full_path + "passlog-0.log")
+    except FileNotFoundError:
+        pass
     os.remove(video_full_path)
 
+    return output_file_name
 
 async def download_tiktok(url: str):
     api_url = f"https://www.tikwm.com/api/?url={url}"
@@ -415,14 +408,13 @@ async def download_tiktok(url: str):
             with open(filename, "wb") as f:
                 f.write(await resp.read())
 
-    # Check size and compress if needed
+    # Compress if >8MB
     if os.path.getsize(filename) > 8 * 1024 * 1024:
         compressed = f"compressed_{filename}"
-        await compress_video(filename, compressed)
-        os.remove(filename)
-        filename = compressed
+        filename = await run_command(filename, compressed)
 
     return filename
+
 
 
 def update_growing_seeds(user_id):
