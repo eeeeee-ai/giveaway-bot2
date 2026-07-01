@@ -16,8 +16,6 @@ from discord import ButtonStyle
 from io import BytesIO
 from datetime import datetime
 import aiohttp
-import pyppeteer
-
 
 # ============================================================
 # CONFIG — change these IDs to match your server
@@ -366,31 +364,43 @@ async def run_command(video_full_path, output_file_name, target_size):
     os.remove(video_full_path + "passlog-0.log")
     os.remove(video_full_path)
 
-async def download_tiktok(url):
-    browser = await pyppeteer.launch({'headless': True, "args": ['--no-sandbox', '--disable-setuid-sandbox']})
-    page = await browser.newPage()
-    await page.setUserAgent('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.72 Safari/537.36')
-    await page.goto(url, {"waitUntil": 'load', "timeout": 1000000})
-    element = await page.querySelector('video')
-    video_url = await page.evaluate('(element) => element.src', element)
-    cookies = await page.cookies()
-    await browser.close()
+import aiohttp
+import re
+import os
 
-    jar = {c['name']: c['value'] for c in cookies}
-    headers = {"Connection": "keep-alive", "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/90.0.4430.72 Safari/537.36", "Referer": "https://www.tiktok.com/"}
-
-    filename = f"tt_{int(time.time()*1000)}.mp4"
+async def download_tiktok(url: str):
+    # Resolve redirects (vm.tiktok.com → real link)
     async with aiohttp.ClientSession() as session:
-        async with session.get(video_url, headers=headers, cookies=jar) as resp:
-            with open(filename, 'wb') as fd:
-                async for chunk in resp.content.iter_chunked(4096):
-                    fd.write(chunk)
+        async with session.get(url, allow_redirects=True) as resp:
+            final_url = str(resp.url)
 
-    if os.path.getsize(filename) >= 8388000:
-        compressed = filename + "comp.mp4"
-        await run_command(filename, compressed, 8388000)
-        filename = compressed
+    # Extract video ID
+    match = re.search(r'/video/(\d+)', final_url)
+    if not match:
+        raise Exception("Could not extract video ID")
+    video_id = match.group(1)
+
+    api_url = f"https://www.tiktok.com/api/item/detail/?itemId={video_id}"
+
+    # Fetch metadata
+    async with aiohttp.ClientSession() as session:
+        async with session.get(api_url, headers={"User-Agent": "Mozilla/5.0"}) as resp:
+            data = await resp.json()
+
+    try:
+        video_url = data["itemInfo"]["itemStruct"]["video"]["playAddr"]
+    except:
+        raise Exception("Could not find video URL in metadata")
+
+    # Download video file
+    filename = f"tiktok_{video_id}.mp4"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(video_url) as resp:
+            with open(filename, "wb") as f:
+                f.write(await resp.read())
+
     return filename
+
 
 
 def update_growing_seeds(user_id):
