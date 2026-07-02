@@ -2059,13 +2059,16 @@ async def download_video(url: str) -> bytes:
 
 
 async def compress_video(video_bytes: bytes) -> bytes:
-    """Compress video to under 8MB using ffmpeg."""
-    import tempfile, os, asyncio
+    """Compress video to under 8MB using ffmpeg — audio extracted and reattached at full quality."""
+    import tempfile, os, asyncio, math
+
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
         tmp_in.write(video_bytes)
         tmp_in_path = tmp_in.name
 
-    tmp_out_path = tmp_in_path + "_compressed.mp4"
+    audio_path      = tmp_in_path + "_audio.aac"
+    video_only_path = tmp_in_path + "_videoonly.mp4"
+    tmp_out_path    = tmp_in_path + "_compressed.mp4"
 
     try:
         # Get duration
@@ -2077,15 +2080,25 @@ async def compress_video(video_bytes: bytes) -> bytes:
         stdout, _ = await probe.communicate()
         duration = float(stdout.strip())
 
-        # Calculate bitrate to fit under 8MB
-        import math
-        bitrate = str(math.floor(8 * 8100 / duration) - 32) + "k"
+        # Reserve 128k for audio, rest goes to video
+        AUDIO_BITRATE  = 128  # kbps
+        total_kbps     = math.floor(8 * 8100 / duration)
+        video_kbps     = max(100, total_kbps - AUDIO_BITRATE)
+        video_bitrate  = f"{video_kbps}k"
 
-        # Two-pass compression
+        # Step 1 — Extract audio at full quality
+        extract_audio = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", tmp_in_path,
+            "-vn", "-acodec", "aac", "-b:a", f"{AUDIO_BITRATE}k", audio_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await extract_audio.communicate()
+
+        # Step 2 — Two-pass video-only compression
         pass1 = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", tmp_in_path,
             "-c:v", "libx264", "-preset", "ultrafast",
-            "-b:v", bitrate, "-pass", "1", "-an", "-f", "mp4", tmp_out_path,
+            "-b:v", video_bitrate, "-pass", "1", "-an", "-f", "mp4", video_only_path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await pass1.communicate()
@@ -2093,19 +2106,26 @@ async def compress_video(video_bytes: bytes) -> bytes:
         pass2 = await asyncio.create_subprocess_exec(
             "ffmpeg", "-y", "-i", tmp_in_path,
             "-c:v", "libx264", "-preset", "ultrafast",
-            "-b:v", bitrate, "-pass", "2", "-c:a", "aac", "-b:a", "32k", tmp_out_path,
+            "-b:v", video_bitrate, "-pass", "2", "-an", video_only_path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
         await pass2.communicate()
+
+        # Step 3 — Merge compressed video + original audio
+        merge = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", video_only_path, "-i", audio_path,
+            "-c:v", "copy", "-c:a", "copy", "-shortest", tmp_out_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await merge.communicate()
 
         with open(tmp_out_path, "rb") as f:
             compressed = f.read()
         return compressed
     finally:
-        try: os.remove(tmp_in_path)
-        except: pass
-        try: os.remove(tmp_out_path)
-        except: pass
+        for p in [tmp_in_path, audio_path, video_only_path, tmp_out_path]:
+            try: os.remove(p)
+            except: pass
         for ext in ["-0.log", "-0.log.mbtree"]:
             try: os.remove(tmp_in_path + "passlog" + ext)
             except: pass
