@@ -1236,6 +1236,71 @@ async def on_message(message):
                 pass
             return
 
+    # ── TikTok auto-embed ─────────────────────────────────────────────────────
+    if re.search(r"https?://(www\.tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/\S+", message.content):
+        url_match = re.search(r"https?://(www\.tiktok\.com|vm\.tiktok\.com|vt\.tiktok\.com)/\S+", message.content)
+        if url_match:
+            tiktok_url = url_match.group(0).rstrip(".,)")
+            status_msg = await message.channel.send("⏳ Downloading TikTok, give me a sec...", reference=message)
+            try:
+                data = await fetch_tiktok(tiktok_url)
+                if not data:
+                    await status_msg.edit(content="❌ Couldn't fetch that TikTok. It might be private or deleted.")
+                else:
+                    video_url     = data.get("hdplay") or data.get("play")
+                    author        = data.get("author", {})
+                    author_name   = author.get("nickname", "Unknown")
+                    author_unique = author.get("unique_id", "")
+                    caption       = data.get("title", "No caption")
+                    likes         = data.get("digg_count", 0)
+                    comments      = data.get("comment_count", 0)
+                    shares        = data.get("share_count", 0)
+                    avatar_url    = author.get("avatar", "")
+
+                    def fmt(n):
+                        if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+                        if n >= 1_000: return f"{n/1_000:.1f}K"
+                        return str(n)
+
+                    video_bytes = await download_video(video_url)
+                    if not video_bytes:
+                        await status_msg.edit(content="❌ Failed to download the video.")
+                    else:
+                        if len(video_bytes) >= 8_388_000:
+                            await status_msg.edit(content="⏳ Video is large, compressing...")
+                            video_bytes = await compress_video(video_bytes)
+
+                        if not video_bytes:
+                            await status_msg.edit(content="❌ Compression failed.")
+                        else:
+                            embed = discord.Embed(
+                                description=f"**{caption}**\n\n❤️ {fmt(likes)}  💬 {fmt(comments)}  ➡️ {fmt(shares)}",
+                                color=discord.Color.from_rgb(254, 44, 85),
+                                url=tiktok_url
+                            )
+                            embed.set_author(
+                                name=f"{author_name} (@{author_unique})",
+                                url=f"https://www.tiktok.com/@{author_unique}",
+                                icon_url=avatar_url
+                            )
+                            embed.set_footer(
+                                text=f"Requested by {message.author.display_name}",
+                                icon_url=message.author.display_avatar.url
+                            )
+                            file = discord.File(fp=BytesIO(video_bytes), filename="tiktok.mp4")
+                            await status_msg.delete()
+                            msg = await message.channel.send(embed=embed, file=file)
+                            await msg.add_reaction("❌")
+            except Exception as e:
+                import traceback
+                print(f"[TikTok] Error: {e}")
+                traceback.print_exc()
+                try:
+                    await status_msg.edit(content=f"❌ Something went wrong: `{e}`")
+                except Exception:
+                    pass
+            return
+
     await bot.process_commands(message)
 
 
@@ -2046,82 +2111,7 @@ async def compress_video(video_bytes: bytes) -> bytes:
             except: pass
 
 
-@tree.command(name="ttembed", description="Embed a TikTok video directly in Discord")
-@app_commands.describe(url="TikTok video URL")
-async def ttembed(interaction: discord.Interaction, url: str):
-    # Validate it looks like a TikTok URL
-    if "tiktok.com" not in url:
-        return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
 
-    await interaction.response.send_message("⏳ Downloading TikTok, give me a sec...")
-    status_msg = await interaction.original_response()
-
-    try:
-        # Fetch video info
-        data = await fetch_tiktok(url)
-        if not data:
-            await status_msg.edit(content="❌ Couldn't fetch that TikTok. It might be private or deleted.")
-            return
-
-        video_url   = data.get("hdplay") or data.get("play")
-        author      = data.get("author", {})
-        author_name = author.get("nickname", "Unknown")
-        author_unique = author.get("unique_id", "")
-        caption     = data.get("title", "No caption")
-        likes       = data.get("digg_count", 0)
-        comments    = data.get("comment_count", 0)
-        shares      = data.get("share_count", 0)
-        avatar_url  = author.get("avatar", "")
-
-        # Format numbers
-        def fmt(n):
-            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-            if n >= 1_000: return f"{n/1_000:.1f}K"
-            return str(n)
-
-        # Download video
-        video_bytes = await download_video(video_url)
-        if not video_bytes:
-            await status_msg.edit(content="❌ Failed to download the video.")
-            return
-
-        # Compress if over 8MB
-        if len(video_bytes) >= 8_388_000:
-            await status_msg.edit(content="⏳ Video is large, compressing...")
-            video_bytes = await compress_video(video_bytes)
-            if not video_bytes:
-                await status_msg.edit(content="❌ Compression failed.")
-                return
-
-        # Build embed
-        embed = discord.Embed(
-            description=f"**{caption}**\n\n❤️ {fmt(likes)}  💬 {fmt(comments)}  ➡️ {fmt(shares)}",
-            color=discord.Color.from_rgb(254, 44, 85),
-            url=url
-        )
-        embed.set_author(
-            name=f"{author_name} (@{author_unique})",
-            url=f"https://www.tiktok.com/@{author_unique}",
-            icon_url=avatar_url
-        )
-        embed.set_footer(
-            text=f"Requested by {interaction.user.display_name}",
-            icon_url=interaction.user.display_avatar.url
-        )
-
-        file = discord.File(fp=__import__("io").BytesIO(video_bytes), filename="tiktok.mp4")
-        await status_msg.delete()
-        msg = await interaction.channel.send(embed=embed, file=file)
-        await msg.add_reaction("❌")
-
-    except Exception as e:
-        import traceback
-        print(f"[TikTok] Error: {e}")
-        traceback.print_exc()
-        try:
-            await status_msg.edit(content=f"❌ Something went wrong: `{e}`")
-        except Exception:
-            pass
 
 
 @bot.event
