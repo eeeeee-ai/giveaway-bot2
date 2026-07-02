@@ -1971,10 +1971,14 @@ async def fetch_tiktok(url: str):
     api_url = "https://www.tikwm.com/api/"
     async with aiohttp.ClientSession() as session:
         async with session.post(api_url, data={"url": url, "hd": 1}) as resp:
+            print(f"[TikTok] API status: {resp.status}")
             if resp.status != 200:
+                print(f"[TikTok] Bad status: {resp.status}")
                 return None
             data = await resp.json()
+            print(f"[TikTok] API response code: {data.get('code')}, msg: {data.get('msg')}")
             if data.get("code") != 0:
+                print(f"[TikTok] API error: {data}")
                 return None
             return data["data"]
 
@@ -2110,9 +2114,11 @@ async def ttembed(interaction: discord.Interaction, url: str):
         await msg.add_reaction("❌")
 
     except Exception as e:
-        print(f"TikTok embed error: {e}")
+        import traceback
+        print(f"[TikTok] Error: {e}")
+        traceback.print_exc()
         try:
-            await status_msg.edit(content="❌ Something went wrong while processing that TikTok.")
+            await status_msg.edit(content=f"❌ Something went wrong: `{e}`")
         except Exception:
             pass
 
