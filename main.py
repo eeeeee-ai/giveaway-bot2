@@ -1247,7 +1247,7 @@ async def on_message(message):
                 if not data:
                     await status_msg.edit(content="❌ Couldn't fetch that TikTok. It might be private or deleted.")
                 else:
-                    video_url     = data.get("hdplay") or data.get("play")
+                    video_url     = data.get("play") or data.get("hdplay")
                     author        = data.get("author", {})
                     author_name   = author.get("nickname", "Unknown")
                     author_unique = author.get("unique_id", "")
@@ -2034,9 +2034,9 @@ async def role_color(interaction: discord.Interaction):
 
 async def fetch_tiktok(url: str):
     """Fetch TikTok video info and download URL via tikwm.com API."""
-    api_url = "https://www.tikwm.com/api/"
+    api_url = f"https://www.tikwm.com/api/?url={url}"
     async with aiohttp.ClientSession() as session:
-        async with session.post(api_url, data={"url": url, "hd": 1}) as resp:
+        async with session.get(api_url) as resp:
             print(f"[TikTok] API status: {resp.status}")
             if resp.status != 200:
                 print(f"[TikTok] Bad status: {resp.status}")
