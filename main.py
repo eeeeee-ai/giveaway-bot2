@@ -15,11 +15,6 @@ from discord.ui import Select, Button, View
 from discord import ButtonStyle
 from io import BytesIO
 from datetime import datetime
-import aiohttp
-
-# ============================================================
-# CONFIG — change these IDs to match your server
-# ============================================================
 
 BOOSTER_ROLE_ID = 1520740405547761755
 ADMIN_ROLE_IDS  = [1517236355275428040, 1517235116114579727]
@@ -51,7 +46,6 @@ intents.message_content = True
 
 bot  = commands.Bot(command_prefix="!", intents=intents)
 tree = bot.tree
-
 
 
 # ============================================================
@@ -219,7 +213,6 @@ def update_leak_type(name: str, new_type: str) -> bool:
 # IN-MEMORY STATE
 # ============================================================
 
-TIKTOK_REGEX = re.compile(r"(tiktok\.com|vm\.tiktok\.com)")
 giveaway_logs    = []
 active_giveaways = {}
 user_message_counts = defaultdict(int)
@@ -315,18 +308,6 @@ class GrowingSeed:
                 return mut
         return None
 
-import asyncio
-import os
-
-async def compress_video(input_file, output_file, target_bitrate="800k"):
-    cmd = [
-        "ffmpeg", "-y", "-i", input_file,
-        "-c:v", "libx264", "-preset", "fast", "-b:v", target_bitrate,
-        "-c:a", "aac", "-b:a", "64k", output_file
-    ]
-    proc = await asyncio.create_subprocess_exec(*cmd)
-    await proc.communicate()
-    return 
 
 def calculate_grow_time(base_seed, user_id):
     grow_time = 300
@@ -341,57 +322,6 @@ def calculate_grow_time(base_seed, user_id):
     if boost and time.time() < boost["expires"]:
         grow_time *= boost["multiplier"]
     return max(30, grow_time)
-
-async def run_command(video_full_path, output_file_name, target_bitrate="800k"):
-    # Two-pass compression without ffprobe
-    cmd1 = [
-        "ffmpeg", "-y", "-i", video_full_path,
-        "-c:v", "libx264", "-passlogfile", video_full_path + "passlog",
-        "-preset", "ultrafast", "-b:v", target_bitrate,
-        "-pass", "1", "-an", "-f", "mp4", os.devnull
-    ]
-    cmd2 = [
-        "ffmpeg", "-y", "-i", video_full_path,
-        "-c:v", "libx264", "-passlogfile", video_full_path + "passlog",
-        "-preset", "ultrafast", "-b:v", target_bitrate,
-        "-pass", "2", "-c:a", "aac", "-b:a", "32k", output_file_name
-    ]
-
-    for cmd in (cmd1, cmd2):
-        p = await asyncio.create_subprocess_exec(*cmd)
-        await p.communicate()
-
-    # Clean up logs and original file
-    try:
-        os.remove(video_full_path + "passlog-0.log")
-    except FileNotFoundError:
-        pass
-    os.remove(video_full_path)
-
-    return output_file_name
-
-async def download_tiktok(url: str):
-    api_url = f"https://www.tikwm.com/api/?url={url}"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url) as resp:
-            data = await resp.json()
-
-    video_url = data["data"]["play"]  # no watermark
-    filename = f"tiktok_{data['data']['id']}.mp4"
-
-    async with aiohttp.ClientSession() as session:
-        async with session.get(video_url) as resp:
-            with open(filename, "wb") as f:
-                f.write(await resp.read())
-
-    # Compress if >8MB
-    if os.path.getsize(filename) > 8 * 1024 * 1024:
-        compressed = f"compressed_{filename}"
-        filename = await run_command(filename, compressed)
-
-    return filename
-
 
 
 def update_growing_seeds(user_id):
@@ -2024,6 +1954,183 @@ async def role_color(interaction: discord.Interaction):
     )
     embed.set_footer(text="Booster perk • Color applies to your name in the member list")
     await interaction.followup.send(embed=embed, view=RoleColorView(), ephemeral=True)
+
+
+
+# ============================================================
+# TIKTOK EMBED COMMAND
+# ============================================================
+
+async def fetch_tiktok(url: str):
+    """Fetch TikTok video info and download URL via tikwm.com API."""
+    api_url = "https://www.tikwm.com/api/"
+    async with aiohttp.ClientSession() as session:
+        async with session.post(api_url, data={"url": url, "hd": 1}) as resp:
+            if resp.status != 200:
+                return None
+            data = await resp.json()
+            if data.get("code") != 0:
+                return None
+            return data["data"]
+
+
+async def download_video(url: str) -> bytes:
+    """Download video into memory."""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                return None
+            return await resp.read()
+
+
+async def compress_video(video_bytes: bytes) -> bytes:
+    """Compress video to under 8MB using ffmpeg."""
+    import tempfile, os, asyncio
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_in:
+        tmp_in.write(video_bytes)
+        tmp_in_path = tmp_in.name
+
+    tmp_out_path = tmp_in_path + "_compressed.mp4"
+
+    try:
+        # Get duration
+        probe = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", tmp_in_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await probe.communicate()
+        duration = float(stdout.strip())
+
+        # Calculate bitrate to fit under 8MB
+        import math
+        bitrate = str(math.floor(8 * 8100 / duration) - 32) + "k"
+
+        # Two-pass compression
+        pass1 = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", tmp_in_path,
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-b:v", bitrate, "-pass", "1", "-an", "-f", "mp4", tmp_out_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await pass1.communicate()
+
+        pass2 = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", tmp_in_path,
+            "-c:v", "libx264", "-preset", "ultrafast",
+            "-b:v", bitrate, "-pass", "2", "-c:a", "aac", "-b:a", "32k", tmp_out_path,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        await pass2.communicate()
+
+        with open(tmp_out_path, "rb") as f:
+            compressed = f.read()
+        return compressed
+    finally:
+        try: os.remove(tmp_in_path)
+        except: pass
+        try: os.remove(tmp_out_path)
+        except: pass
+        for ext in ["-0.log", "-0.log.mbtree"]:
+            try: os.remove(tmp_in_path + "passlog" + ext)
+            except: pass
+
+
+@tree.command(name="ttembed", description="Embed a TikTok video directly in Discord")
+@app_commands.describe(url="TikTok video URL")
+async def ttembed(interaction: discord.Interaction, url: str):
+    # Validate it looks like a TikTok URL
+    if "tiktok.com" not in url:
+        return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
+
+    await interaction.response.send_message("⏳ Downloading TikTok, give me a sec...")
+    status_msg = await interaction.original_response()
+
+    try:
+        # Fetch video info
+        data = await fetch_tiktok(url)
+        if not data:
+            await status_msg.edit(content="❌ Couldn't fetch that TikTok. It might be private or deleted.")
+            return
+
+        video_url   = data.get("hdplay") or data.get("play")
+        author      = data.get("author", {})
+        author_name = author.get("nickname", "Unknown")
+        author_unique = author.get("unique_id", "")
+        caption     = data.get("title", "No caption")
+        likes       = data.get("digg_count", 0)
+        comments    = data.get("comment_count", 0)
+        shares      = data.get("share_count", 0)
+        avatar_url  = author.get("avatar", "")
+
+        # Format numbers
+        def fmt(n):
+            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+            if n >= 1_000: return f"{n/1_000:.1f}K"
+            return str(n)
+
+        # Download video
+        video_bytes = await download_video(video_url)
+        if not video_bytes:
+            await status_msg.edit(content="❌ Failed to download the video.")
+            return
+
+        # Compress if over 8MB
+        if len(video_bytes) >= 8_388_000:
+            await status_msg.edit(content="⏳ Video is large, compressing...")
+            video_bytes = await compress_video(video_bytes)
+            if not video_bytes:
+                await status_msg.edit(content="❌ Compression failed.")
+                return
+
+        # Build embed
+        embed = discord.Embed(
+            description=f"**{caption}**\n\n❤️ {fmt(likes)}  💬 {fmt(comments)}  ➡️ {fmt(shares)}",
+            color=discord.Color.from_rgb(254, 44, 85),
+            url=url
+        )
+        embed.set_author(
+            name=f"{author_name} (@{author_unique})",
+            url=f"https://www.tiktok.com/@{author_unique}",
+            icon_url=avatar_url
+        )
+        embed.set_footer(
+            text=f"Requested by {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
+
+        file = discord.File(fp=__import__("io").BytesIO(video_bytes), filename="tiktok.mp4")
+        await status_msg.delete()
+        msg = await interaction.channel.send(embed=embed, file=file)
+        await msg.add_reaction("❌")
+
+    except Exception as e:
+        print(f"TikTok embed error: {e}")
+        try:
+            await status_msg.edit(content="❌ Something went wrong while processing that TikTok.")
+        except Exception:
+            pass
+
+
+@bot.event
+async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
+    """Allow the requester to delete the embed by reacting with ❌."""
+    if payload.emoji.name != "❌":
+        return
+    if payload.member and payload.member.bot:
+        return
+    try:
+        channel = bot.get_channel(payload.channel_id)
+        message = await channel.fetch_message(payload.message_id)
+        if message.author.id != bot.user.id:
+            return
+        # Check footer to see if this user requested it
+        if message.embeds and message.embeds[0].footer:
+            footer = message.embeds[0].footer.text or ""
+            if payload.member and payload.member.display_name in footer:
+                await message.delete()
+    except Exception as e:
+        print(f"Reaction handler error: {e}")
 
 
 
