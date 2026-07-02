@@ -14,6 +14,7 @@ from typing import Optional
 from discord.ui import Select, Button, View
 from discord import ButtonStyle
 from io import BytesIO
+import aiohttp
 from datetime import datetime
 
 
