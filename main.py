@@ -16,6 +16,11 @@ from discord import ButtonStyle
 from io import BytesIO
 from datetime import datetime
 
+
+# ============================================================
+# CONFIG — change these IDs to match your server
+# ============================================================
+
 BOOSTER_ROLE_ID = 1520740405547761755
 ADMIN_ROLE_IDS  = [1517236355275428040, 1517235116114579727]
 
