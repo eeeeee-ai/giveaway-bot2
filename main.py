@@ -2187,8 +2187,14 @@ async def analyse(interaction: discord.Interaction, url: str):
         region      = data.get("region", "N/A") or "N/A"
         create_time = data.get("create_time", 0)
         cover       = data.get("cover", "")
-        width       = data.get("width", 0)
-        height_v    = data.get("height", 0)
+        width    = data.get("width", 0)
+        height_v = data.get("height", 0)
+
+        # Fallback: pull resolution from first quality variant if top-level is 0
+        if (not width or not height_v) and isinstance(data.get("bit_rate"), list) and data["bit_rate"]:
+            play_addr = data["bit_rate"][0].get("play_addr", {})
+            width     = play_addr.get("width", 0)
+            height_v  = play_addr.get("height", 0)
 
         # Stats
         views     = data.get("play_count",     0)
