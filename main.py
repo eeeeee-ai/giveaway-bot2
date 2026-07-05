@@ -2161,207 +2161,6 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 # ANALYSE COMMAND
 # ============================================================
 
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
-import textwrap
-
-async def fetch_image(url: str) -> Image.Image | None:
-    """Download an image from a URL and return as PIL Image."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    data = await resp.read()
-                    return Image.open(BytesIO(data)).convert("RGBA")
-    except Exception:
-        pass
-    return None
-
-
-def make_rounded_rect(draw, xy, radius, fill):
-    """Draw a rounded rectangle."""
-    x1, y1, x2, y2 = xy
-    draw.rounded_rectangle([x1, y1, x2, y2], radius=radius, fill=fill)
-
-
-def fmt_num(n):
-    if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
-    if n >= 1_000:     return f"{n/1_000:.1f}K"
-    return str(n)
-
-
-def get_font(size):
-    try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", size)
-    except Exception:
-        return ImageFont.load_default()
-
-
-def get_font_regular(size):
-    try:
-        return ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", size)
-    except Exception:
-        return ImageFont.load_default()
-
-
-async def generate_analytics_card(data: dict, url: str) -> BytesIO:
-    """Generate a stylish analytics card image using Pillow."""
-    import datetime
-
-    # ── Colours ──────────────────────────────────────────────
-    BG          = (15,  15,  20)       # near-black background
-    CARD        = (25,  25,  35)       # card surface
-    ACCENT      = (254, 44,  85)       # TikTok red-pink
-    ACCENT2     = (0,   242, 234)      # TikTok teal
-    WHITE       = (255, 255, 255)
-    GREY        = (160, 160, 180)
-    STAT_BG     = (35,  35,  50)
-
-    W, H = 900, 520
-    img  = Image.new("RGB", (W, H), BG)
-    draw = ImageDraw.Draw(img)
-
-    # ── Fonts ────────────────────────────────────────────────
-    f_title    = get_font(22)
-    f_name     = get_font(18)
-    f_handle   = get_font_regular(14)
-    f_stat_val = get_font(20)
-    f_stat_lbl = get_font_regular(12)
-    f_caption  = get_font_regular(13)
-    f_small    = get_font_regular(11)
-    f_section  = get_font(13)
-
-    # ── Extract data ─────────────────────────────────────────
-    author        = data.get("author", {})
-    author_name   = author.get("nickname", "Unknown")[:20]
-    author_unique = author.get("unique_id", "")
-    avatar_url    = author.get("avatar", "")
-    cover_url     = data.get("cover", "")
-    caption       = data.get("title", "No caption")
-    video_id      = str(data.get("id", "N/A"))
-    duration      = data.get("duration", 0)
-    region        = data.get("region", "N/A") or "N/A"
-    create_time   = data.get("create_time", 0)
-    width         = data.get("width", 0)
-    height_v      = data.get("height", 0)
-
-    views     = data.get("play_count",     0)
-    likes     = data.get("digg_count",     0)
-    comments  = data.get("comment_count",  0)
-    shares    = data.get("share_count",    0)
-    downloads = data.get("download_count", 0)
-    favorites = data.get("collect_count",  0)
-
-    posted = datetime.datetime.fromtimestamp(create_time).strftime("%d %b %Y, %H:%M") if create_time else "N/A"
-
-    # ── Cover image (left panel blurred background) ──────────
-    COVER_W = 200
-    cover_img = await fetch_image(cover_url)
-    if cover_img:
-        # Blurred background strip
-        bg_strip = cover_img.resize((COVER_W, H)).filter(ImageFilter.GaussianBlur(15))
-        bg_strip = bg_strip.convert("RGB")
-        # Darken it
-        dark = Image.new("RGB", (COVER_W, H), (0, 0, 0))
-        bg_strip = Image.blend(bg_strip, dark, 0.5)
-        img.paste(bg_strip, (0, 0))
-        # Centered cover thumbnail
-        thumb_h = int(COVER_W * (height_v / width)) if width else 300
-        thumb_h = min(thumb_h, H - 40)
-        thumb   = cover_img.resize((COVER_W - 20, thumb_h))
-        thumb_y = (H - thumb_h) // 2
-        img.paste(thumb, (10, thumb_y))
-
-    # ── Main card area ────────────────────────────────────────
-    CARD_X = COVER_W + 10
-    make_rounded_rect(draw, (CARD_X, 10, W - 10, H - 10), 16, CARD)
-
-    # ── Accent top bar ────────────────────────────────────────
-    draw.rounded_rectangle([CARD_X, 10, W - 10, 14], radius=8, fill=ACCENT)
-
-    # ── Avatar ────────────────────────────────────────────────
-    AV_X, AV_Y, AV_SIZE = CARD_X + 16, 22, 52
-    avatar_img = await fetch_image(avatar_url)
-    if avatar_img:
-        avatar_img = avatar_img.resize((AV_SIZE, AV_SIZE))
-        mask = Image.new("L", (AV_SIZE, AV_SIZE), 0)
-        ImageDraw.Draw(mask).ellipse([0, 0, AV_SIZE, AV_SIZE], fill=255)
-        av_rgb = avatar_img.convert("RGB")
-        img.paste(av_rgb, (AV_X, AV_Y), mask)
-    else:
-        draw.ellipse([AV_X, AV_Y, AV_X + AV_SIZE, AV_Y + AV_SIZE], fill=ACCENT)
-
-    # ── Author name + handle ──────────────────────────────────
-    NAME_X = AV_X + AV_SIZE + 12
-    draw.text((NAME_X, AV_Y + 4),  author_name,          font=f_name,   fill=WHITE)
-    draw.text((NAME_X, AV_Y + 28), f"@{author_unique}",  font=f_handle, fill=GREY)
-
-    # ── TikTok Analytics title (top right) ───────────────────
-    draw.text((W - 200, 28), "TikTok Analytics", font=f_title, fill=ACCENT)
-
-    # ── Caption ───────────────────────────────────────────────
-    CAP_Y = AV_Y + AV_SIZE + 14
-    cap_lines = textwrap.wrap(caption, width=52)[:2]
-    for i, line in enumerate(cap_lines):
-        draw.text((CARD_X + 16, CAP_Y + i * 17), line, font=f_caption, fill=GREY)
-
-    # ── Divider ───────────────────────────────────────────────
-    DIV_Y = CAP_Y + 45
-    draw.line([(CARD_X + 16, DIV_Y), (W - 26, DIV_Y)], fill=(50, 50, 70), width=1)
-
-    # ── Stat boxes ───────────────────────────────────────────
-    stats = [
-        ("👁  Views",     fmt_num(views)),
-        ("❤  Likes",     fmt_num(likes)),
-        ("💬  Comments",  fmt_num(comments)),
-        ("⭐  Favorites", fmt_num(favorites)),
-        ("➡  Shares",    fmt_num(shares)),
-        ("⬇  Downloads", fmt_num(downloads)),
-    ]
-
-    STAT_START_X = CARD_X + 16
-    STAT_Y       = DIV_Y + 14
-    STAT_W       = 118
-    STAT_H       = 62
-    STAT_GAP     = 10
-    cols         = 3
-
-    for i, (label, value) in enumerate(stats):
-        col = i % cols
-        row = i // cols
-        sx  = STAT_START_X + col * (STAT_W + STAT_GAP)
-        sy  = STAT_Y + row * (STAT_H + STAT_GAP)
-        make_rounded_rect(draw, (sx, sy, sx + STAT_W, sy + STAT_H), 10, STAT_BG)
-        draw.text((sx + 8, sy + 8),  value, font=f_stat_val, fill=WHITE)
-        draw.text((sx + 8, sy + 38), label, font=f_stat_lbl, fill=GREY)
-
-    # ── Info panel (right side) ───────────────────────────────
-    INFO_X = STAT_START_X + cols * (STAT_W + STAT_GAP) + 10
-    INFO_Y = DIV_Y + 14
-
-    make_rounded_rect(draw, (INFO_X, INFO_Y, W - 26, INFO_Y + 158), 10, STAT_BG)
-
-    draw.text((INFO_X + 10, INFO_Y + 10),  "INFO",                     font=f_section,  fill=ACCENT2)
-    draw.text((INFO_X + 10, INFO_Y + 32),  f"Region:    {region}",     font=f_small,    fill=WHITE)
-    draw.text((INFO_X + 10, INFO_Y + 52),  f"Duration:  {duration}s",  font=f_small,    fill=WHITE)
-    draw.text((INFO_X + 10, INFO_Y + 72),  f"Res:       {width}x{height_v}", font=f_small, fill=WHITE)
-    draw.text((INFO_X + 10, INFO_Y + 92),  f"Posted:    {posted}",     font=f_small,    fill=WHITE)
-
-    # Video ID (truncated)
-    vid_id_short = video_id[:18] + "..." if len(video_id) > 18 else video_id
-    draw.text((INFO_X + 10, INFO_Y + 112), f"ID:",                     font=f_small,    fill=GREY)
-    draw.text((INFO_X + 10, INFO_Y + 128), vid_id_short,               font=f_small,    fill=WHITE)
-
-    # ── Footer ────────────────────────────────────────────────
-    draw.text((CARD_X + 16, H - 28), "powered by tikwm.com", font=f_small, fill=(80, 80, 100))
-    draw.text((W - 180,     H - 28), "TikTok Auto Analytics", font=f_small, fill=(80, 80, 100))
-
-    # ── Export ────────────────────────────────────────────────
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
-    return buf
-
-
 @tree.command(name="analyse", description="Get detailed analytics for a TikTok video")
 @app_commands.describe(url="TikTok video URL")
 async def analyse(interaction: discord.Interaction, url: str):
@@ -2375,17 +2174,111 @@ async def analyse(interaction: discord.Interaction, url: str):
         if not data:
             return await interaction.followup.send("❌ Couldn't fetch that TikTok. It might be private or deleted.")
 
-        card_buf = await generate_analytics_card(data, url)
-        file     = discord.File(fp=card_buf, filename="analytics.png")
+        # Author
+        author        = data.get("author", {})
+        author_name   = author.get("nickname", "Unknown")
+        author_unique = author.get("unique_id", "")
+        avatar_url    = author.get("avatar", "")
 
-        embed = discord.Embed(color=discord.Color.from_rgb(254, 44, 85), url=url)
-        embed.set_image(url="attachment://analytics.png")
+        # Video info
+        caption     = data.get("title", "No caption")
+        video_id    = str(data.get("id", "N/A"))
+        duration    = data.get("duration", 0)
+        region      = data.get("region", "N/A") or "N/A"
+        create_time = data.get("create_time", 0)
+        cover       = data.get("cover", "")
+        width       = data.get("width", 0)
+        height_v    = data.get("height", 0)
+
+        # Stats
+        views     = data.get("play_count",     0)
+        likes     = data.get("digg_count",     0)
+        comments  = data.get("comment_count",  0)
+        shares    = data.get("share_count",    0)
+        downloads = data.get("download_count", 0)
+        favorites = data.get("collect_count",  0)
+
+        # Quality variants
+        bitrate          = data.get("bit_rate", [])
+        quality_variants = []
+        if isinstance(bitrate, list):
+            for b in bitrate[:3]:
+                br        = b.get("bit_rate", 0)
+                codec     = b.get("codec_type", "")
+                play_addr = b.get("play_addr", {})
+                w         = play_addr.get("width", width)
+                h         = play_addr.get("height", height_v)
+                if br:
+                    quality_variants.append(f"`{w}x{h} • {br//1000}kbps • {codec}`")
+
+        def fmt(n):
+            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+            if n >= 1_000:     return f"{n/1_000:.1f}K"
+            return str(n)
+
+        def region_with_flag(r):
+            if not r or r == "N/A": return "🌍 N/A"
+            try:
+                flag = "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in r.upper())
+                return f"{flag} {r}"
+            except Exception:
+                return f"🌍 {r}"
+
+        posted = f"<t:{create_time}:F>" if create_time else "N/A"
+
+        # Build embed
+        embed = discord.Embed(
+            color=discord.Color.from_rgb(254, 44, 85),
+            url=url
+        )
+
+        embed.set_author(
+            name=f"{author_name}  •  @{author_unique}",
+            url=f"https://www.tiktok.com/@{author_unique}",
+            icon_url=avatar_url
+        )
+
+        # Caption as description
+        cap = caption[:200] + ("..." if len(caption) > 200 else "")
+        embed.description = f"*{cap}*"
+
+        if cover:
+            embed.set_thumbnail(url=cover)
+
+        # Stats row
+        stats_text = "\n".join([
+            f"\U0001f441\ufe0f  `{fmt(views)}`  views",
+            f"\u2764\ufe0f  `{fmt(likes)}`  likes",
+            f"\U0001f4ac  `{fmt(comments)}`  comments",
+            f"\u2b50  `{fmt(favorites)}`  favorites",
+            f"\u27a1\ufe0f  `{fmt(shares)}`  shares",
+            f"\u2b07\ufe0f  `{fmt(downloads)}`  downloads",
+        ])
+        embed.add_field(name="\U0001f4ca  Statistics", value=stats_text, inline=True)
+
+        info_text = "\n".join([
+            f"\U0001f4cd  {region_with_flag(region)}",
+            f"\u23f1\ufe0f  {duration}s",
+            f"\U0001f4fa  {width}x{height_v}",
+            f"\U0001f4c5  {posted}",
+            f"\U0001f194  `{video_id}`",
+        ])
+        embed.add_field(name="\u2139\ufe0f  Info", value=info_text, inline=True)
+
+        # Quality variants
+        if quality_variants:
+            embed.add_field(
+                name="\u26a1  Quality Variants",
+                value="\n".join(quality_variants),
+                inline=False
+            )
+
         embed.set_footer(
-            text=f"Requested by {interaction.user.display_name}",
+            text=f"Requested by {interaction.user.display_name}  •  powered by tikwm.com",
             icon_url=interaction.user.display_avatar.url
         )
 
-        await interaction.followup.send(embed=embed, file=file)
+        await interaction.followup.send(embed=embed)
 
     except Exception as e:
         import traceback
