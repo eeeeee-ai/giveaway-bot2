@@ -2158,6 +2158,97 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 # BACKGROUND TASKS
 # ============================================================
+# AUDIO RIPPER COMMAND
+# ============================================================
+
+@tree.command(name="audio", description="Extract and send the audio from a TikTok as an MP3")
+@app_commands.describe(url="TikTok video URL")
+async def audio_rip(interaction: discord.Interaction, url: str):
+    if "tiktok.com" not in url:
+        return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
+
+    await interaction.response.send_message("⏳ Extracting audio...")
+    status_msg = await interaction.original_response()
+
+    try:
+        # Fetch video info
+        data = await fetch_tiktok(url)
+        if not data:
+            return await status_msg.edit(content="❌ Couldn't fetch that TikTok. It might be private or deleted.")
+
+        video_url     = data.get("play") or data.get("hdplay")
+        author        = data.get("author", {})
+        author_name   = author.get("nickname", "Unknown")
+        author_unique = author.get("unique_id", "")
+        caption       = data.get("title", "No caption")
+        music         = data.get("music_info", {})
+        music_title   = music.get("title", "Unknown")
+        music_author  = music.get("author", "Unknown")
+        duration      = data.get("duration", 0)
+
+        # Download video into temp file then extract audio with ffmpeg
+        import tempfile, os, asyncio
+
+        video_bytes = await download_video(video_url)
+        if not video_bytes:
+            return await status_msg.edit(content="❌ Failed to download the video.")
+
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_vid:
+            tmp_vid.write(video_bytes)
+            tmp_vid_path = tmp_vid.name
+
+        tmp_audio_path = tmp_vid_path + ".mp3"
+
+        try:
+            # Extract audio using ffmpeg
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-i", tmp_vid_path,
+                "-vn", "-acodec", "libmp3lame", "-b:a", "128k", tmp_audio_path,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            await proc.communicate()
+
+            if not os.path.exists(tmp_audio_path):
+                return await status_msg.edit(content="❌ Failed to extract audio.")
+
+            with open(tmp_audio_path, "rb") as f:
+                audio_bytes = f.read()
+        finally:
+            try: os.remove(tmp_vid_path)
+            except: pass
+            try: os.remove(tmp_audio_path)
+            except: pass
+
+        # Build embed
+        embed = discord.Embed(
+            title="🎵 Audio Extracted",
+            description=f"**{caption[:100]}{'...' if len(caption) > 100 else ''}**",
+            color=discord.Color.from_rgb(254, 44, 85)
+        )
+        embed.add_field(name="👤 TikTok Author", value=f"{author_name} (@{author_unique})", inline=True)
+        embed.add_field(name="🎵 Song",          value=f"{music_title} — {music_author}",   inline=True)
+        embed.add_field(name="⏱️ Duration",       value=f"{duration}s",                      inline=True)
+        embed.set_footer(
+            text=f"Requested by {interaction.user.display_name}",
+            icon_url=interaction.user.display_avatar.url
+        )
+
+        file = discord.File(fp=BytesIO(audio_bytes), filename=f"{author_unique}_{music_title[:20]}.mp3".replace(" ", "_"))
+        await status_msg.delete()
+        await interaction.channel.send(embed=embed, file=file)
+
+    except Exception as e:
+        import traceback
+        print(f"[Audio] Error: {e}")
+        traceback.print_exc()
+        try:
+            await status_msg.edit(content=f"❌ Something went wrong: `{e}`")
+        except Exception:
+            pass
+
+
+
+# ============================================================
 
 @tasks.loop(minutes=5)
 async def cleanup_expired():
