@@ -2158,6 +2158,139 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 # BACKGROUND TASKS
 # ============================================================
+# ANALYSE COMMAND
+# ============================================================
+
+@tree.command(name="analyse", description="Get detailed analytics for a TikTok video")
+@app_commands.describe(url="TikTok video URL")
+async def analyse(interaction: discord.Interaction, url: str):
+    if "tiktok.com" not in url:
+        return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
+
+    await interaction.response.defer()
+
+    try:
+        data = await fetch_tiktok(url)
+        if not data:
+            return await interaction.followup.send("❌ Couldn't fetch that TikTok. It might be private or deleted.")
+
+        # Author info
+        author        = data.get("author", {})
+        author_name   = author.get("nickname", "Unknown")
+        author_unique = author.get("unique_id", "")
+        avatar_url    = author.get("avatar", "")
+
+        # Video info
+        caption     = data.get("title", "No caption")
+        video_id    = data.get("id", "N/A")
+        duration    = data.get("duration", 0)
+        region      = data.get("region", "N/A")
+        create_time = data.get("create_time", 0)
+        cover       = data.get("cover", "")
+
+        # Stats
+        views     = data.get("play_count", 0)
+        likes     = data.get("digg_count", 0)
+        comments  = data.get("comment_count", 0)
+        shares    = data.get("share_count", 0)
+        downloads = data.get("download_count", 0)
+        favorites = data.get("collect_count", 0)
+
+        # Quality info
+        width    = data.get("width", 0)
+        height   = data.get("height", 0)
+        bitrate  = data.get("bit_rate", [{}])
+        
+        quality_variants = []
+        if isinstance(bitrate, list):
+            for b in bitrate[:3]:  # Max 3 variants
+                gear      = b.get("gear_name", "")
+                br        = b.get("bit_rate", 0)
+                codec     = b.get("codec_type", "")
+                play_addr = b.get("play_addr", {})
+                w         = play_addr.get("width", width)
+                h         = play_addr.get("height", height)
+                if br:
+                    quality_variants.append(f"`{w}x{h} • {br//1000}kbps • {codec}`")
+
+        # Format numbers
+        def fmt(n):
+            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+            if n >= 1_000: return f"{n/1_000:.1f}K"
+            return str(n)
+
+        # Format region flag
+        def region_flag(r):
+            if not r or r == "N/A": return "🌍 N/A"
+            try:
+                flag = "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in r.upper())
+                return f"{flag} {r}"
+            except:
+                return f"🌍 {r}"
+
+        # Posted date
+        posted = f"<t:{create_time}:F>" if create_time else "N/A"
+
+        embed = discord.Embed(
+            title="📊 TikTok Analytics",
+            description=f"> {caption[:150]}{'...' if len(caption) > 150 else ''}",
+            color=discord.Color.from_rgb(254, 44, 85),
+            url=url
+        )
+
+        if cover:
+            embed.set_thumbnail(url=cover)
+
+        embed.set_author(
+            name=f"{author_name} (@{author_unique})",
+            url=f"https://www.tiktok.com/@{author_unique}",
+            icon_url=avatar_url
+        )
+
+        # Row 1 — Author, Posted, Video ID
+        embed.add_field(name="👤 Author",   value=f"{author_name}\n(@{author_unique})", inline=True)
+        embed.add_field(name="📅 Posted",   value=posted,                               inline=True)
+        embed.add_field(name="🆔 Video ID", value=f"`{video_id}`",                      inline=True)
+
+        # Row 2 — Stats
+        stats_val = (
+            f"👁️ **{fmt(views)}** Views\n"
+            f"❤️ **{fmt(likes)}** Likes\n"
+            f"💬 **{fmt(comments)}** Comments\n"
+            f"⭐ **{fmt(favorites)}** Favorites\n"
+            f"➡️ **{fmt(shares)}** Shares\n"
+            f"⬇️ **{fmt(downloads)}** Downloads"
+        )
+        embed.add_field(name="📊 Statistics", value=stats_val, inline=True)
+
+        info_val = (
+            f"📍 Region: {region_flag(region)}\n"
+            f"⏱️ Duration: {duration}s\n"
+            f"📺 Resolution: {width}x{height}"
+        )
+        embed.add_field(name="ℹ️ Info", value=info_val, inline=True)
+
+        # Quality variants
+        if quality_variants:
+            embed.add_field(
+                name="⚡ Quality Variants",
+                value="\n".join(quality_variants),
+                inline=False
+            )
+
+        embed.set_footer(text=f"Requested by {interaction.user.display_name} • © tikwm.com", icon_url=interaction.user.display_avatar.url)
+
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        import traceback
+        print(f"[Analyse] Error: {e}")
+        traceback.print_exc()
+        await interaction.followup.send(f"❌ Something went wrong: `{e}`")
+
+
+
+# ============================================================
 # AUDIO RIPPER COMMAND
 # ============================================================
 
