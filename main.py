@@ -2034,7 +2034,7 @@ async def role_color(interaction: discord.Interaction):
 
 async def fetch_tiktok(url: str):
     """Fetch TikTok video info and download URL via tikwm.com API."""
-    api_url = f"https://www.tikwm.com/api/?url={url}"
+    api_url = f"https://www.tikwm.com/api/?url={url}&hd=1"
     async with aiohttp.ClientSession() as session:
         async with session.get(api_url) as resp:
             print(f"[TikTok] API status: {resp.status}")
