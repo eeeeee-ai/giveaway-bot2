@@ -150,10 +150,29 @@ def init_db():
                 count    INTEGER NOT NULL DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
 init_db()
+
+
+# ---- Settings helpers ----
+
+def get_setting(key: str) -> str | None:
+    with get_db() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+def set_setting(key: str, value: str):
+    with get_db() as conn:
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?", (key, value, value))
+        conn.commit()
 
 
 # ---- DB helpers ----
@@ -2452,12 +2471,211 @@ async def analyse(interaction: discord.Interaction, url: str):
 
 
 
+# ============================================================
+# SONG COMMAND
+# ============================================================
+
+@tree.command(name="song", description="Find and download the full song from a TikTok video")
+@app_commands.describe(url="TikTok video URL")
+async def song_cmd(interaction: discord.Interaction, url: str):
+    audio_channel_id = get_setting("audio_channel_id")
+    if audio_channel_id and interaction.channel_id != int(audio_channel_id):
+        ch = interaction.guild.get_channel(int(audio_channel_id))
+        mention = ch.mention if ch else "the designated audio channel"
+        return await interaction.response.send_message(f"❌ This command can only be used in {mention}.", ephemeral=True)
+
+    if "tiktok.com" not in url:
+        return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
+
+    await interaction.response.send_message("⏳ Finding the song...")
+    status_msg = await interaction.original_response()
+
+    try:
+        import yt_dlp
+        import tempfile, os, asyncio
+
+        # Step 1 — get song info from tikwm
+        data = await fetch_tiktok(url)
+        if not data:
+            return await status_msg.edit(content="❌ Couldn't fetch that TikTok.")
+
+        music       = data.get("music_info", {})
+        music_title = music.get("title", "")
+        music_auth  = music.get("author", "")
+        is_original = music.get("original", False)
+
+        # If it's an original sound with no real song, fall back to TikTok audio
+        if is_original or not music_title:
+            await status_msg.edit(content="⏳ No matched song found — sending TikTok audio instead...")
+            video_url   = data.get("play") or data.get("hdplay")
+            video_bytes = await download_video(video_url)
+            if not video_bytes:
+                return await status_msg.edit(content="❌ Failed to download audio.")
+
+            with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                tmp.write(video_bytes)
+                tmp_path = tmp.name
+            out_path = tmp_path + ".mp3"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", tmp_path,
+                    "-vn", "-acodec", "libmp3lame", "-b:a", "128k", out_path,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                await proc.communicate()
+                with open(out_path, "rb") as f:
+                    audio_bytes = f.read()
+            finally:
+                try: os.remove(tmp_path)
+                except: pass
+                try: os.remove(out_path)
+                except: pass
+
+            embed = discord.Embed(
+                title="🎵 Original Sound",
+                description=f"No matchable song found — here's the TikTok audio\n**Sound:** {music_title or 'Unknown'}",
+                color=discord.Color.blurple()
+            )
+            embed.set_footer(text=f"Requested by {interaction.user.display_name}", icon_url=interaction.user.display_avatar.url)
+            file = discord.File(fp=BytesIO(audio_bytes), filename="tiktok_audio.mp3")
+            await status_msg.delete()
+            await interaction.channel.send(embed=embed, file=file)
+            return
+
+        # Step 2 — search YouTube for the full song
+        search_query = f"{music_title} {music_auth} official audio"
+        await status_msg.edit(content=f"⏳ Found **{music_title}** by **{music_auth}** — searching YouTube...")
+
+        tmp_dir  = tempfile.mkdtemp()
+        out_path = os.path.join(tmp_dir, "song.%(ext)s")
+
+        ydl_opts = {
+            "format":           "bestaudio/best",
+            "outtmpl":          out_path,
+            "quiet":            True,
+            "no_warnings":      True,
+            "default_search":   f"ytsearch1:{search_query}",
+            "postprocessors":   [{
+                "key":            "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "noplaylist": True,
+        }
+
+        loop = asyncio.get_event_loop()
+
+        def run_ydl():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(f"ytsearch1:{search_query}", download=True)
+                return info["entries"][0] if "entries" in info else info
+
+        await status_msg.edit(content=f"⏳ Downloading **{music_title}**...")
+        info = await loop.run_in_executor(None, run_ydl)
+
+        # Find the downloaded mp3
+        mp3_path = None
+        for f in os.listdir(tmp_dir):
+            if f.endswith(".mp3"):
+                mp3_path = os.path.join(tmp_dir, f)
+                break
+
+        if not mp3_path or not os.path.exists(mp3_path):
+            return await status_msg.edit(content="❌ Couldn't find the song on YouTube.")
+
+        file_size = os.path.getsize(mp3_path)
+        if file_size > 8_388_000:
+            return await status_msg.edit(content=f"❌ Song file is too large ({file_size//1_048_576}MB) to send on Discord.")
+
+        with open(mp3_path, "rb") as f:
+            song_bytes = f.read()
+
+        # Cleanup
+        try: os.remove(mp3_path)
+        except: pass
+        try: os.rmdir(tmp_dir)
+        except: pass
+
+        yt_title    = info.get("title", music_title)
+        yt_uploader = info.get("uploader", music_auth)
+        duration    = info.get("duration", 0)
+        mins, secs  = divmod(int(duration), 60)
+
+        embed = discord.Embed(
+            title="🎵 Song Found",
+            color=discord.Color.from_rgb(254, 44, 85)
+        )
+        embed.add_field(name="🎵 Song",     value=music_title,           inline=True)
+        embed.add_field(name="🎤 Artist",   value=music_auth,            inline=True)
+        embed.add_field(name="⏱️ Duration", value=f"{mins}:{secs:02d}",  inline=True)
+        embed.add_field(name="📺 Source",   value=yt_title[:50],         inline=False)
+        embed.set_footer(
+            text=f"Requested by {interaction.user.display_name}  •  via YouTube",
+            icon_url=interaction.user.display_avatar.url
+        )
+
+        safe_title = "".join(c for c in music_title if c.isalnum() or c in " -_")[:30]
+        file = discord.File(fp=BytesIO(song_bytes), filename=f"{safe_title}.mp3")
+        await status_msg.delete()
+        await interaction.channel.send(embed=embed, file=file)
+
+    except Exception as e:
+        import traceback
+        print(f"[Song] Error: {e}")
+        traceback.print_exc()
+        try:
+            await status_msg.edit(content=f"❌ Something went wrong: `{e}`")
+        except Exception:
+            pass
+
+
+
 # AUDIO RIPPER COMMAND
+# ============================================================
+# AUDIO CHANNEL COMMAND
+# ============================================================
+
+@tree.command(name="audiochannel", description="Set the channel where /audio and /song can be used (admin only)")
+@auto_defer(ephemeral=True)
+@app_commands.describe(channel="The channel to restrict /audio and /song to")
+async def audio_channel(interaction: discord.Interaction, channel: discord.TextChannel):
+    if not has_admin_role(interaction.user):
+        return await interaction.followup.send("❌ Admins only.", ephemeral=True)
+
+    set_setting("audio_channel_id", str(channel.id))
+
+    embed = discord.Embed(
+        title="✅ Audio Channel Set",
+        description=f"/audio and /song can now only be used in {channel.mention}",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text=f"Set by {interaction.user.display_name}")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@tree.command(name="audiochannelclear", description="Remove the audio channel restriction (admin only)")
+@auto_defer(ephemeral=True)
+async def audio_channel_clear(interaction: discord.Interaction):
+    if not has_admin_role(interaction.user):
+        return await interaction.followup.send("❌ Admins only.", ephemeral=True)
+
+    set_setting("audio_channel_id", "")
+    await interaction.followup.send("✅ Audio channel restriction removed — /audio and /song can now be used anywhere.", ephemeral=True)
+
+
+
 # ============================================================
 
 @tree.command(name="audio", description="Extract and send the audio from a TikTok as an MP3")
 @app_commands.describe(url="TikTok video URL")
 async def audio_rip(interaction: discord.Interaction, url: str):
+    # Check if an audio channel is set and enforce it
+    audio_channel_id = get_setting("audio_channel_id")
+    if audio_channel_id and interaction.channel_id != int(audio_channel_id):
+        ch = interaction.guild.get_channel(int(audio_channel_id))
+        mention = ch.mention if ch else f"the designated audio channel"
+        return await interaction.response.send_message(f"❌ This command can only be used in {mention}.", ephemeral=True)
+
     if "tiktok.com" not in url:
         return await interaction.response.send_message("❌ That doesn't look like a TikTok URL.", ephemeral=True)
 
