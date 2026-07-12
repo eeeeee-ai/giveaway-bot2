@@ -2158,6 +2158,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 
 # BACKGROUND TASKS
 # ============================================================
+# ============================================================
 # ANALYSE COMMAND
 # ============================================================
 
@@ -2174,29 +2175,21 @@ async def analyse(interaction: discord.Interaction, url: str):
         if not data:
             return await interaction.followup.send("❌ Couldn't fetch that TikTok. It might be private or deleted.")
 
-        # Author
         author        = data.get("author", {})
         author_name   = author.get("nickname", "Unknown")
         author_unique = author.get("unique_id", "")
         avatar_url    = author.get("avatar", "")
 
-        # Video info
         caption     = data.get("title", "No caption")
         video_id    = str(data.get("id", "N/A"))
         duration    = data.get("duration", 0)
         region      = data.get("region", "N/A") or "N/A"
         create_time = data.get("create_time", 0)
         cover       = data.get("cover", "")
-        width    = data.get("width", 0)
-        height_v = data.get("height", 0)
+        music       = data.get("music_info", {})
+        music_title = music.get("title", "")
+        music_auth  = music.get("author", "")
 
-        # Fallback: pull resolution from first quality variant if top-level is 0
-        if (not width or not height_v) and isinstance(data.get("bit_rate"), list) and data["bit_rate"]:
-            play_addr = data["bit_rate"][0].get("play_addr", {})
-            width     = play_addr.get("width", 0)
-            height_v  = play_addr.get("height", 0)
-
-        # Stats
         views     = data.get("play_count",     0)
         likes     = data.get("digg_count",     0)
         comments  = data.get("comment_count",  0)
@@ -2204,83 +2197,76 @@ async def analyse(interaction: discord.Interaction, url: str):
         downloads = data.get("download_count", 0)
         favorites = data.get("collect_count",  0)
 
-        # Quality variants
-        bitrate          = data.get("bit_rate", [])
-        quality_variants = []
-        if isinstance(bitrate, list):
-            for b in bitrate[:3]:
-                br        = b.get("bit_rate", 0)
-                codec     = b.get("codec_type", "")
-                play_addr = b.get("play_addr", {})
-                w         = play_addr.get("width", width)
-                h         = play_addr.get("height", height_v)
-                if br:
-                    quality_variants.append(f"`{w}x{h} • {br//1000}kbps • {codec}`")
-
         def fmt(n):
+            if not n: return "0"
             if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
             if n >= 1_000:     return f"{n/1_000:.1f}K"
             return str(n)
 
-        def region_with_flag(r):
-            if not r or r == "N/A": return "🌍 N/A"
+        def fmt_size(b):
+            if not b: return "N/A"
+            if b >= 1_048_576: return f"{b/1_048_576:.1f} MB"
+            if b >= 1_024:     return f"{b/1_024:.1f} KB"
+            return f"{b} B"
+
+        def flag(r):
+            if not r or r == "N/A": return "N/A"
             try:
-                flag = "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in r.upper())
-                return f"{flag} {r}"
+                return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in r.upper()) + f" {r}"
             except Exception:
-                return f"🌍 {r}"
+                return r
 
-        posted = f"<t:{create_time}:F>" if create_time else "N/A"
+        size_normal = fmt_size(data.get("size", 0))
+        size_hd     = fmt_size(data.get("hd_size", 0))
+        posted      = f"<t:{create_time}:F>" if create_time else "N/A"
 
-        # Build embed
         embed = discord.Embed(
             color=discord.Color.from_rgb(254, 44, 85),
-            url=url
+            url=url,
+            description=(
+                f"### [{author_name}](https://www.tiktok.com/@{author_unique})  `@{author_unique}`\n"
+                f"> {caption[:180]}{'...' if len(caption) > 180 else ''}"
+            )
         )
-
-        embed.set_author(
-            name=f"{author_name}  •  @{author_unique}",
-            url=f"https://www.tiktok.com/@{author_unique}",
-            icon_url=avatar_url
-        )
-
-        # Caption as description
-        cap = caption[:200] + ("..." if len(caption) > 200 else "")
-        embed.description = f"*{cap}*"
 
         if cover:
             embed.set_thumbnail(url=cover)
 
-        # Stats row
-        stats_text = "\n".join([
-            f"\U0001f441\ufe0f  `{fmt(views)}`  views",
-            f"\u2764\ufe0f  `{fmt(likes)}`  likes",
-            f"\U0001f4ac  `{fmt(comments)}`  comments",
-            f"\u2b50  `{fmt(favorites)}`  favorites",
-            f"\u27a1\ufe0f  `{fmt(shares)}`  shares",
-            f"\u2b07\ufe0f  `{fmt(downloads)}`  downloads",
-        ])
-        embed.add_field(name="\U0001f4ca  Statistics", value=stats_text, inline=True)
+        embed.add_field(
+            name="📈  Performance",
+            value=(
+                f"👁️ **{fmt(views)}** views\n"
+                f"❤️ **{fmt(likes)}** likes\n"
+                f"💬 **{fmt(comments)}** comments\n"
+                f"⭐ **{fmt(favorites)}** saves\n"
+                f"🔁 **{fmt(shares)}** shares\n"
+                f"⬇️ **{fmt(downloads)}** downloads"
+            ),
+            inline=True
+        )
 
-        info_text = "\n".join([
-            f"\U0001f4cd  {region_with_flag(region)}",
-            f"\u23f1\ufe0f  {duration}s",
-            f"\U0001f4fa  {width}x{height_v}",
-            f"\U0001f4c5  {posted}",
-            f"\U0001f194  `{video_id}`",
-        ])
-        embed.add_field(name="\u2139\ufe0f  Info", value=info_text, inline=True)
+        info_lines = [
+            f"📍 **Region:** {flag(region)}",
+            f"⏱️ **Duration:** {duration}s",
+            f"📦 **Size:** {size_normal}  |  HD: {size_hd}",
+        ]
+        if music_title:
+            info_lines.append(f"🎵 **Song:** {music_title[:28]}")
+        if music_auth:
+            info_lines.append(f"🎤 **Artist:** {music_auth[:28]}")
+        info_lines.append(f"📅 **Posted:** {posted}")
 
-        # Quality variants
-        if quality_variants:
-            embed.add_field(
-                name="\u26a1  Quality Variants",
-                value="\n".join(quality_variants),
-                inline=False
-            )
+        embed.add_field(
+            name="🎬  Video Info",
+            value="\n".join(info_lines),
+            inline=True
+        )
+
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+        embed.add_field(name="🆔  Video ID", value=f"`{video_id}`", inline=True)
 
         embed.set_footer(
-            text=f"Requested by {interaction.user.display_name}  •  powered by tikwm.com",
+            text=f"Requested by {interaction.user.display_name}  •  tikwm.com",
             icon_url=interaction.user.display_avatar.url
         )
 
@@ -2294,7 +2280,6 @@ async def analyse(interaction: discord.Interaction, url: str):
 
 
 
-# ============================================================
 # AUDIO RIPPER COMMAND
 # ============================================================
 
