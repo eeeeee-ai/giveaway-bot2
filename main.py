@@ -2220,8 +2220,24 @@ async def analyse(interaction: discord.Interaction, url: str):
         size_hd     = fmt_size(data.get("hd_size", 0))
         posted      = f"<t:{create_time}:F>" if create_time else "N/A"
 
+        # Shadowban calculation
+        now          = time.time()
+        age_seconds  = now - create_time if create_time else 0
+        age_hours    = age_seconds / 3600
+        age_minutes  = age_seconds / 60
+
+        if age_minutes < 20:
+            shadowban_status = "❓ Unknown (too recent)"
+            shadowban_color  = discord.Color.yellow()
+        elif age_hours >= 24 and views < 100:
+            shadowban_status = "⚠️ Likely Shadowbanned"
+            shadowban_color  = discord.Color.red()
+        else:
+            shadowban_status = "✅ No Shadowban Detected"
+            shadowban_color  = discord.Color.green()
+
         embed = discord.Embed(
-            color=discord.Color.from_rgb(254, 44, 85),
+            color=shadowban_color,
             url=url,
             description=(
                 f"### [{author_name}](https://www.tiktok.com/@{author_unique})  `@{author_unique}`\n"
@@ -2240,7 +2256,8 @@ async def analyse(interaction: discord.Interaction, url: str):
                 f"💬 **{fmt(comments)}** comments\n"
                 f"⭐ **{fmt(favorites)}** saves\n"
                 f"🔁 **{fmt(shares)}** shares\n"
-                f"⬇️ **{fmt(downloads)}** downloads"
+                f"⬇️ **{fmt(downloads)}** downloads\n"
+                f"🚫 **Shadowban:** {shadowban_status}"
             ),
             inline=True
         )
