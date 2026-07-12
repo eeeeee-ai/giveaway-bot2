@@ -2159,6 +2159,161 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 # BACKGROUND TASKS
 # ============================================================
 # ============================================================
+# ============================================================
+# PROFILE COMMAND
+# ============================================================
+
+@tree.command(name="profile", description="Get TikTok profile stats for a username")
+@app_commands.describe(username="TikTok username (without @)")
+async def profile(interaction: discord.Interaction, username: str):
+    username = username.lstrip("@").strip()
+    await interaction.response.defer()
+
+    try:
+        api_url = f"https://www.tikwm.com/api/user/info?unique_id={username}"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url) as resp:
+                if resp.status != 200:
+                    return await interaction.followup.send("❌ Couldn't reach the API.", ephemeral=True)
+                data = await resp.json()
+
+        print(f"[Profile] Response: {data}")
+
+        if data.get("code") != 0:
+            return await interaction.followup.send(f"❌ User `@{username}` not found.", ephemeral=True)
+
+        u = data["data"]["user"]
+        s = data["data"]["stats"]
+
+        nickname    = u.get("nickname", username)
+        unique_id   = u.get("uniqueId", username)
+        bio         = u.get("signature", "No bio")
+        avatar      = u.get("avatarLarger", "") or u.get("avatarMedium", "")
+        verified    = u.get("verified", False)
+        private     = u.get("privateAccount", False)
+        region      = u.get("region", "N/A") or "N/A"
+
+        followers   = s.get("followerCount",  0)
+        following   = s.get("followingCount", 0)
+        likes       = s.get("heartCount",     0)
+        videos      = s.get("videoCount",     0)
+
+        def fmt(n):
+            if not n: return "0"
+            if n >= 1_000_000: return f"{n/1_000_000:.1f}M"
+            if n >= 1_000:     return f"{n/1_000:.1f}K"
+            return str(n)
+
+        def flag(r):
+            if not r or r == "N/A": return ""
+            try:
+                return "".join(chr(0x1F1E6 + ord(c) - ord("A")) for c in r.upper()) + " "
+            except Exception:
+                return ""
+
+        badges = []
+        if verified: badges.append("✅ Verified")
+        if private:  badges.append("🔒 Private")
+        badge_str = "  ".join(badges) if badges else "🌐 Public"
+
+        embed = discord.Embed(
+            color=discord.Color.from_rgb(254, 44, 85),
+            url=f"https://www.tiktok.com/@{unique_id}",
+            description=f"> {bio[:200]}{'...' if len(bio) > 200 else ''}" if bio and bio != "No bio" else ""
+        )
+
+        embed.set_author(
+            name=f"{nickname}  •  @{unique_id}",
+            url=f"https://www.tiktok.com/@{unique_id}",
+            icon_url=avatar
+        )
+
+        if avatar:
+            embed.set_thumbnail(url=avatar)
+
+        embed.add_field(
+            name="📊  Stats",
+            value=(
+                f"👥 **{fmt(followers)}** followers\n"
+                f"➡️ **{fmt(following)}** following\n"
+                f"❤️ **{fmt(likes)}** total likes\n"
+                f"🎬 **{fmt(videos)}** videos"
+            ),
+            inline=True
+        )
+
+        embed.add_field(
+            name="ℹ️  Info",
+            value=(
+                f"🌍 **Region:** {flag(region)}{region}\n"
+                f"🏷️ **Status:** {badge_str}"
+            ),
+            inline=True
+        )
+
+        # ── Shadowban check via 5 latest videos ──────────────────
+        shadowban_status = "❓ Unknown"
+        try:
+            posts_url = f"https://www.tikwm.com/api/user/posts?unique_id={unique_id}&count=5"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(posts_url) as r:
+                    posts_data = await r.json()
+
+            if posts_data.get("code") == 0:
+                videos_list = posts_data["data"].get("videos", [])
+                now = time.time()
+                low_view_count = 0
+                unknown_count  = 0
+                checked        = 0
+
+                for v in videos_list[:5]:
+                    v_views      = v.get("play_count", 0)
+                    v_created    = v.get("create_time", 0)
+                    age_seconds  = now - v_created if v_created else 0
+                    age_minutes  = age_seconds / 60
+                    age_hours    = age_seconds / 3600
+
+                    if age_minutes < 20:
+                        unknown_count += 1
+                    elif age_hours >= 24 and v_views < 100:
+                        low_view_count += 1
+                    checked += 1
+
+                if checked == 0:
+                    shadowban_status = "❓ No videos found"
+                elif unknown_count == checked:
+                    shadowban_status = "❓ Unknown (all videos too recent)"
+                elif low_view_count >= 3:
+                    shadowban_status = "⚠️ Likely Shadowbanned"
+                elif low_view_count >= 1:
+                    shadowban_status = "⚠️ Possibly Shadowbanned"
+                else:
+                    shadowban_status = "✅ No Shadowban Detected"
+        except Exception as e:
+            print(f"[Profile] Shadowban check error: {e}")
+            shadowban_status = "❓ Couldn't check"
+
+        embed.add_field(
+            name="🚫  Shadowban Status",
+            value=shadowban_status,
+            inline=False
+        )
+
+        embed.set_footer(
+            text=f"Requested by {interaction.user.display_name}  •  tikwm.com",
+            icon_url=interaction.user.display_avatar.url
+        )
+
+        await interaction.followup.send(embed=embed)
+
+    except Exception as e:
+        import traceback
+        print(f"[Profile] Error: {e}")
+        traceback.print_exc()
+        await interaction.followup.send(f"❌ Something went wrong: `{e}`")
+
+
+
 # ANALYSE COMMAND
 # ============================================================
 
